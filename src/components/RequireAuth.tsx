@@ -2,7 +2,7 @@ import { Link, Navigate, useLocation } from 'react-router-dom'
 import { Button, Result } from 'antd'
 import { useAuth } from '../hooks/useAuth'
 import type { UserRole } from '../types/auth'
-import { sanitizeRedirectPath } from '../utils/auth'
+import { resolveLoginRedirect } from '../utils/loginRedirect'
 import { getDefaultHome } from '../utils/roleNavigation'
 
 type RequireAuthProps = {
@@ -32,15 +32,19 @@ type GuestOnlyProps = {
   children: React.ReactNode
 }
 
-/** 已登录用户访问登录页时跳转到首页或 redirect */
+/** 登录后只回到当前角色可进入的页面，否则返回当前角色工作台。 */
 export function GuestOnly({ children }: GuestOnlyProps) {
   const { session } = useAuth()
   const location = useLocation()
-  const params = new URLSearchParams(location.search)
-  const redirect = sanitizeRedirectPath(params.get('redirect'))
 
   if (session) {
-    return <Navigate to={redirect ?? getDefaultHome(session.role)} replace />
+    const params = new URLSearchParams(location.search)
+    const target = resolveLoginRedirect(
+      session.role,
+      params.get('redirect'),
+    )
+
+    return <Navigate to={target} replace />
   }
 
   return children

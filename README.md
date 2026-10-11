@@ -7,7 +7,9 @@
 ## 在线演示
 
 - Cloudflare Pages：<https://liangmutrace.pages.dev>
-- 当前线上版本是静态前端演示，数据来自内置 JSON 与当前浏览器的 localStorage，不与本机 PostgreSQL 互通。
+- 后端 API：<https://liangmu-trace-api.onrender.com/api/health>
+- 当前线上使用 API 模式，连接 Render 后端、Neon PostgreSQL 演示库与 DeepSeek；不与本机开发数据库互通。静态 demo 保留为独立离线兜底。
+- 已审核档案可匿名访问，例如 [黄精公开溯源](https://liangmutrace.pages.dev/public/trace/YM-TRACE-2026-0015)。完整详情与 AI 需要登录；演示数据不代表真实药材质量认证。
 
 ## 核心业务链路
 
@@ -29,6 +31,16 @@
 批次详情页与快速预览的「问问 AI」打开同一个全局聊天抽屉，并带入所选批次。可见信息和可用操作由身份与权限决定。公开溯源页面只展示允许公开的字段；完整详情与真实 AI 服务需要登录。
 
 AI 聊天支持可移除的批次标签和完整 YM 编号定位。API 模式按账号保存历史，刷新/重登读取最近 40 轮，服务端最多使用 4 轮相关历史；批次事实每轮重新按权限读取，普通交流不强制 RAG。静态 demo 中的 AI 回复为离线演示。
+
+登录回跳只接受安全且当前角色可进入的已知页面，保留合法目标的查询参数与锚点；其他角色或未知页面回到当前角色工作台。此逻辑只改善导航体验，不替代前端 403 守卫或后端角色、组织与资源权限。
+
+管理员的风险审核抽屉支持停止分析或关闭窗口取消未完成请求；重新打开时读取最近已保存建议，不自动重新调用模型。只有本次读取成功、未暂停且建议未过期时才能提交人工结论，人工提交期间禁止关闭；取消分析不会撤销已提交的结果。
+
+### 业务通知与人工沟通
+
+业务通知提供全部、未读、已读筛选，人工沟通使用独立联系人和私聊页面。采购商仅联系平台管理员兼任的客服；种植商和加工商按同组织、已分配批次协作关系及平台权限访问联系人，每次读取和发送仍由后端检查。
+
+人工消息通过 HTTP 保存于 PostgreSQL，Socket.IO 只提示相关账号重新查询，不用推送数组代替数据库。通知与聊天共用一条 App 连接，铃铛合计两类未读；连接/重连重新查询，聊天另有可见页面的 20 秒轮询兜底。发送失败重试复用原消息 UUID，已读游标只前进；只有会话页面正在被查看时自动上报已拉取位置。当前是单实例最小私聊，不包含群聊、附件或必达推送保证。
 
 ## 技术栈
 
@@ -118,7 +130,7 @@ npm run dev
 
 只体验前端时，在 `.env.development.local` 设置 `VITE_AUTH_MODE=demo` 后重启 Vite。生产覆盖用 `.env.production.local` 或平台构建环境变量；模式专用文件优先于通用 `.env.local`，进程环境变量优先级最高，不能误认为 `.env.local` 总会覆盖 `.env.production`。[Vite 配置优先级](https://vite.dev/guide/env-and-mode)
 
-正式接后端时需配置 `VITE_AUTH_MODE=api` 和 HTTPS `VITE_API_BASE_URL=https://<后端域名>/api`；若使用同源 `/api`，必须自行提供真实反向代理，不能仅依赖开发代理。`VITE_*` 会进入浏览器构建产物，禁止填写数据库密码、JWT 密钥或 AI Key。当前 `.env.production` 保持 demo，尚未切换公网真实服务。
+接后端时需配置 `VITE_AUTH_MODE=api` 和 HTTPS `VITE_API_BASE_URL=https://liangmu-trace-api.onrender.com/api`；若使用同源 `/api`，必须自行提供真实反向代理，不能仅依赖开发代理。`VITE_*` 会进入浏览器构建产物，禁止填写数据库密码、JWT 密钥或 AI Key。仓库 `.env.production` 保持 demo 默认值，当前 Pages 生产构建由平台环境变量覆盖为 API 模式；修改这些变量必须重新构建，不能只刷新旧页面。
 
 ### 2. 准备 PostgreSQL
 

@@ -50,9 +50,10 @@ export function useBatchRiskAnalysis(batchId: string) {
 
     const query = useQuery({
         queryKey,
-        queryFn: ({ signal }) =>
-            getLatestRiskAnalysis(batchId, signal),
+        queryFn: ({ signal }) => getLatestRiskAnalysis(batchId, signal),
+        refetchOnMount: 'always',
     })
+    // 关闭会卸载抽屉，旧请求的回调可能不再刷新缓存；而全局默认有 30 秒缓存新鲜期。这里强制重新 GET 已保存建议，不是重新调用付费模型。
 
     const analyze = useMutation({
         mutationFn: ({ controller }: AnalysisRun) =>

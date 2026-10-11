@@ -11,7 +11,7 @@ import ts from 'typescript'
 import { collectStaticFiles } from '../scripts/check-bundle.mjs'
 import { App as AntdApp, ConfigProvider, message as staticMessage, Modal, theme } from 'antd'
 
-let vite, PageLoading, PageErrorBoundary, RequireAuth, authFixture
+let vite, PageLoading, PageErrorBoundary, RequireAuth, GuestOnly, authFixture, navigationFixture, resolveLoginRedirect
 before(async () => {
   vite = await createServer({
     cacheDir: 'node_modules/.vite-tests/engineering',
@@ -21,20 +21,40 @@ before(async () => {
     plugins: [{
       name: 'engineering-auth-fixture', enforce: 'pre',
       resolveId(source, importer) {
+        const isGuard = importer?.replaceAll('\\', '/').endsWith('/components/RequireAuth.tsx')
         if (source === 'virtual:engineering-auth' ||
-          (source === '../hooks/useAuth' && importer?.replaceAll('\\', '/').endsWith('/components/RequireAuth.tsx'))) {
+          (source === '../hooks/useAuth' && isGuard)) {
           return '\0virtual:engineering-auth'
+        }
+        if (source === 'virtual:engineering-navigation') {
+          return '\0virtual:engineering-navigation'
+        }
+      },
+      transform(code, id) {
+        // 仅替换守卫的测试导入；真实路由工具和生产代码不受影响。
+        if (id.replaceAll('\\', '/').endsWith('/components/RequireAuth.tsx')) {
+          return code.replace(/(from\s+)(['"])react-router-dom\2/g, '$1$2virtual:engineering-navigation$2')
         }
       },
       load(id) {
         if (id === '\0virtual:engineering-auth') return 'export const authFixture = { session: null }; export const useAuth = () => authFixture'
+        // SSR 不执行 Navigate 的浏览器 effect，只记录守卫实际传出的目标与 replace。
+        if (id === '\0virtual:engineering-navigation') return `
+          export * from 'react-router-dom'
+          export const navigationFixture = { last: null }
+          export function Navigate(props) { navigationFixture.last = props; return null }
+        `
       },
     }],
   })
   PageLoading = (await vite.ssrLoadModule('/src/components/PageLoading.tsx')).default
   PageErrorBoundary = (await vite.ssrLoadModule('/src/components/PageErrorBoundary.tsx')).default
-  RequireAuth = (await vite.ssrLoadModule('/src/components/RequireAuth.tsx')).RequireAuth
+  const guards = await vite.ssrLoadModule('/src/components/RequireAuth.tsx')
+  RequireAuth = guards.RequireAuth
+  GuestOnly = guards.GuestOnly
   authFixture = (await vite.ssrLoadModule('virtual:engineering-auth')).authFixture
+  navigationFixture = (await vite.ssrLoadModule('virtual:engineering-navigation')).navigationFixture
+  resolveLoginRedirect = (await vite.ssrLoadModule('/src/utils/loginRedirect.ts')).resolveLoginRedirect
 })
 after(async () => { await vite?.close() })
 
@@ -98,6 +118,111 @@ test('角色守卫拒绝越权时不执行 lazy loader，合法角色才进入�
   authFixture.session = { role: 'admin' }
   render()
   assert.equal(loads, 1)
+})
+
+const roleHomes = {
+  admin: '/dashboard', grower: '/grower/dashboard', processor: '/processor/dashboard', buyer: '/buyer/herbs',
+}
+
+test('登录回跳允许本角色页面，其他角色页面回到自己的工作台', () => {
+  const pages = {
+    admin: ['/dashboard', '/admin/herbs', '/admin/herbs/new'],
+    grower: ['/grower/dashboard', '/grower/batches', '/grower/batches/new', '/grower/logs', '/grower/logs/new', '/grower/harvest', '/grower/harvest/new'],
+    processor: ['/processor/dashboard', '/processor/batches'],
+    buyer: ['/buyer/herbs'],
+  }
+  for (const role of Object.keys(roleHomes)) {
+    for (const [owner, paths] of Object.entries(pages)) {
+      for (const path of paths) {
+        assert.equal(resolveLoginRedirect(role, path), owner === role ? path : roleHomes[role])
+      }
+    }
+  }
+})
+
+test('共享页可回跳，合法目标保留查询参数、锚点和末尾斜杠', () => {
+  const paths = [
+    '/messages', '/chat?contact=demo#history', '/profile/',
+    '/trace/YM-TRACE-2026-0015?from=list#timeline', '/public/trace/YM-TRACE-2026-0015',
+  ]
+  for (const role of Object.keys(roleHomes)) {
+    for (const path of paths) assert.equal(resolveLoginRedirect(role, path), path)
+  }
+  assert.equal(resolveLoginRedirect('buyer', '/buyer/herbs?search=黄精#list'), '/buyer/herbs?search=黄精#list')
+})
+
+test('登录回跳拒绝不安全、循环、未知和只匹配前缀的地址', () => {
+  const paths = [
+    null, undefined, '', 'https://evil.test', '//evil.test', '/\\evil.test', '/\nevil', '/profile\t',
+    '/', '/login?redirect=/profile', '/LOGIN/#again', '/unknown', '/buyer/herbs-extra',
+    '/buyer/herbs/extra', '/admin/herbs/new/extra', '/grower/logs/extra', '/processor/batches/extra',
+    '/messages/extra', '/trace', '/trace/code/extra', '/public/trace', '/public/trace/code/extra',
+  ]
+  for (const role of Object.keys(roleHomes)) {
+    for (const path of paths) assert.equal(resolveLoginRedirect(role, path), roleHomes[role], `${role}: ${String(path)}`)
+  }
+})
+
+test('回跳白名单与 App 实际页面及 allowedRoles 保持一致', () => {
+  const ast = ts.createSourceFile('App.tsx', readFileSync('src/App.tsx', 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  let checked = 0
+  const attribute = (node, name) => node.attributes.properties.find((item) => ts.isJsxAttribute(item) && item.name.getText(ast) === name)
+  function visit(node) {
+    if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(ast) === 'Route') {
+      const path = attribute(node, 'path')?.initializer
+      if (path && ts.isStringLiteral(path) && !['/', '/login', '*'].includes(path.text)) {
+        let allowedRoles = Object.keys(roleHomes)
+        function findGuard(element) {
+          if (ts.isJsxOpeningElement(element) && element.tagName.getText(ast) === 'RequireAuth') {
+            const initializer = attribute(element, 'allowedRoles')?.initializer
+            if (initializer && ts.isJsxExpression(initializer) && ts.isArrayLiteralExpression(initializer.expression)) {
+              allowedRoles = initializer.expression.elements.map((role) => role.text)
+            }
+          }
+          ts.forEachChild(element, findGuard)
+        }
+        findGuard(node)
+        const target = path.text.replace(':traceCode', 'YM-TRACE-2026-0015')
+        for (const role of Object.keys(roleHomes)) {
+          assert.equal(resolveLoginRedirect(role, target), allowedRoles.includes(role) ? target : roleHomes[role], `${role}: ${target}`)
+        }
+        checked++
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(ast)
+  assert.ok(checked > 0, '必须找到真实页面，避免空遍历导致测试假通过')
+})
+
+test('GuestOnly 接入回跳校验并使用 replace，匿名用户仍看到登录表单', () => {
+  const render = (role, target) => {
+    authFixture.session = role ? { role } : null
+    navigationFixture.last = null
+    return renderToString(createElement(MemoryRouter, { initialEntries: [`/login?redirect=${encodeURIComponent(target)}`] },
+      createElement(GuestOnly, null, createElement('p', null, '登录表单'))))
+  }
+  for (const [role, candidate, expected] of [
+    ['admin', '/buyer/herbs', '/dashboard'],
+    ['buyer', '/buyer/herbs?search=黄精#list', '/buyer/herbs?search=黄精#list'],
+    ['grower', '/trace/YM-TRACE-2026-0015', '/trace/YM-TRACE-2026-0015'],
+    ['processor', '//evil.test', '/processor/dashboard'],
+  ]) {
+    assert.doesNotMatch(render(role, candidate), /登录表单/)
+    assert.equal(navigationFixture.last.to, expected)
+    assert.equal(navigationFixture.last.replace, true)
+  }
+  assert.match(render(null, '/buyer/herbs'), /登录表单/)
+  assert.equal(navigationFixture.last, null)
+})
+
+test('RequireAuth 未登录仍携带原页面和查询参数返回登录页', () => {
+  authFixture.session = null
+  navigationFixture.last = null
+  renderToString(createElement(MemoryRouter, { initialEntries: ['/buyer/herbs?search=黄精'] },
+    createElement(RequireAuth, { allowedRoles: ['buyer'] }, createElement('p', null, '私有页面'))))
+  assert.equal(navigationFixture.last.to, `/login?redirect=${encodeURIComponent('/buyer/herbs?search=黄精')}`)
+  assert.equal(navigationFixture.last.replace, true)
 })
 
 test('构建静态图递归去重/处理环，不把 dynamicImports 计入首屏，缺失项失败', () => {

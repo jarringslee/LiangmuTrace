@@ -216,7 +216,9 @@ MVP 暂不实现 Refresh Token 和服务端登出撤销：客户端退出时删�
 
 ## AI 风险审核接口
 
-前端审核抽屉已接入，真实 DeepSeek + PostgreSQL + HTTP 烟测通过（建议保存、人工复核、审计关联、权限过滤和过期保护）。在 `server/.env` 设置 `DEEPSEEK_API_KEY` 后重启后端，`DEEPSEEK_MODEL` 默认 `deepseek-flash`，模型名称可以按账户支持情况调整。Key 只保存在服务端；模板中的 Key 必须保持为空。本地浏览器已使用 Mock 模型 + 真实 PostgreSQL 验证停止、失败、手动重试与人工审核；该轮不消耗模型费用，临时数据已清理。
+管理员可在风险审核抽屉中读取建议、发起真实 DeepSeek 分析并提交人工复核。开发时在 `server/.env` 设置 `DEEPSEEK_API_KEY` 后重启后端，`DEEPSEEK_MODEL` 默认 `deepseek-flash`，模型名称可以按账户支持情况调整。Key 只保存在服务端；模板中的 Key 必须保持为空。
+
+前端停止分析或关闭抽屉会取消尚未完成的连接，重新打开只 GET 已保存建议，不自动重跑付费分析。停止不能撤销已经提交的建议；重新读取失败、暂停、正在读取或建议过期时不能提交人工结论，人工审核提交期间不允许关闭。
 
 - `GET /api/batches/:identifier/risk-analysis`：查询最新建议，没有记录时返回 `{ analysis: null }`；批次版本变化或已审核时标记 `stale`
 - `POST /api/batches/:identifier/risk-analysis`：管理员发起分析，返回 201 `{ analysis }`；仅允许待审核批次，请求体为空
@@ -269,8 +271,8 @@ Agent 使用 `get_batch_snapshot`、`inspect_trace_records` 两个只读工具�
 - Express 与 Socket.IO 共用 HTTP Server；客户端使用 `/socket.io`，handshake.auth 仅接受 `{ token }`，JWT 验证与数据库 currentUser 检查独立于前端路由。服务端决定用户房间，不开放任意 join 指令；Origin 限定 CLIENT_ORIGIN，无 Origin 的 CLI 也必须有合法 JWT
 - `notifications:changed` 只提醒前端缓存失效，不携带通知正文。JWT 到期主动断开；长连接每 30 秒检查账号、组织与角色变化，变化时发送 session:invalid 并断开（不是每帧实时检查）。每个 REST 请求仍独立认证
 - 服务为单实例内存广播，没有 Redis adapter、outbox、持久化事件重放或必达保证。提示失败不撤销已提交业务；前端必须在连接/重连时查询 PostgreSQL 补齐，消息表是唯一持久化来源。参考 [Socket.IO 交付保证](https://socket.io/docs/v4/delivery-guarantees/)
-- 前端数据源、Query Hook、App 全局订阅、消息中心与铃铛已向四角色开放。本地浏览器验证加工商/采购商未读与通知列表、种植商空态及各角色返回路径；本次浏览器未模拟网络断线，不将集成测试结论冒充浏览器结论
-- 人工聊天使用独立的会话接口；通知尚不覆盖质检/出库/收货或采购商关注关系。实时服务的生产代理和多实例配置需要单独处理。
+- 前端数据源、Query Hook、App 全局订阅、消息中心与铃铛向四角色开放；账号缓存包含模式和用户 ID。首次连接/重连触发 REST 补查，旧连接通过 active 与 Token 检查丢弃回调，卸载移除监听并断开连接；铃铛合计业务通知与人工聊天未读数
+- 人工聊天使用独立的会话接口；通知尚不覆盖质检/出库/收货或采购商关注关系。当前演示使用单实例 HTTP/WebSocket 服务，多实例共享广播和可靠投递仍未实现。
 
 ## 人工聊天 REST 与实时提示
 
@@ -287,6 +289,7 @@ Agent 使用 `get_batch_snapshot`、`inspect_trace_records` 两个只读工具�
 - `chatContactWhere` 查询有效账号与有效匹配组织：buyer 仅 admin；admin 可联系四角色；grower/processor 可联系同组织、admin 和已绑定批次合作组织。管理员也不能读取未参与的私聊；协作撤销后列表/历史/发送/已读均失去访问权
 - 新增 `ChatConversation` / `ChatParticipant` / `ChatMessage`，不用 Notification 或 Assistant 表冒充人工聊天。双方排序 pairKey 唯一，senderId/clientMessageId 唯一，conversationId/sequence 唯一；发送在事务中原子递增会话序号，失败回滚。并发 UUID 唯一冲突后读取已提交结果，不重复保存
 - 消息提交后只向双方 JWT 用户房间发布无正文的 `chat:changed`，与通知共用一个 Socket.IO Server。已读提示仅给本人；readSequence 条件更新保证只能前进，未读只统计另一人发送的消息
+- 前端仅在会话可见且窗口聚焦时上报已拉取的最新 sequence，后台页面不自动清未读。超时/发送失败不自动重试；原文不变的手动重试复用 clientMessageId，避免服务端已保存但响应丢失时重复发消息
 - 会话创建/消息发送共享单账号每分钟 30 次限流；没有多实例共享限流、Redis adapter/outbox、必达提示、群聊、附件、在线状态、撤回或客服排班。REST 是恢复记录的依据；前端重连/聚焦补查并对可见页面每 20 秒轮询兜底
 
 ## 普通聊天兼容接口
@@ -321,4 +324,6 @@ Agent 使用 `get_batch_snapshot`、`inspect_trace_records` 两个只读工具�
 
 前端开发服务器将 `/api` 和 `/socket.io` 代理到本服务；Cloudflare Pages 的静态 demo 不会部署 Node 后端。真实 API 模式需要独立 HTTPS Node 服务、可访问的 PostgreSQL、后端私密变量，以及 SSE/Socket 网关配置。
 
-服务使用单实例内存限流和实时广播，没有多实例共享限流或 Redis adapter。后端公网部署及真实代理验收需在实际托管环境完成。
+当前演示后端为 `https://liangmu-trace-api.onrender.com`，由 Render 新加坡单实例连接 Neon 演示库。根路径 `/` 没有首页，返回 JSON 404 正常；按需调用 `/api/health` 检查数据库连接，私有业务与 AI 接口需要真实 JWT。
+
+服务使用单实例内存限流和实时广播，没有多实例共享限流或 Redis adapter。当前演示链路支持公网 HTTP、AI 问答、风险 SSE 与双账号人工消息提示；不能据此保证所有网络场景或推送必达。登录回跳、风险抽屉直接关闭取消与重开核验的前端改动尚未发布复验，微信/移动真机另验。`TRUST_PROXY` 暂为 `off`，不能宣称已按真实客户端 IP 正确区分代理后的 IP 限流。

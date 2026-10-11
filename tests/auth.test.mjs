@@ -318,6 +318,38 @@ async function createRiskHookHarness() {
   return { hook, queryKey, herbQueryKeys, QueryObserver }
 }
 
+test('风险 Hook 重开即使缓存新鲜也 GET 已保存建议，读取失败保留旧数据显示但不伪装成功', async () => {
+  const { queryKey, QueryObserver } = await createRiskHookHarness()
+  const query = queryClient.getQueryCache().find({ queryKey })
+  // 从实际 Hook 创建的 Query 取得选项，避免测试自行写 always 而漏掉代码接入。
+  const options = { ...query.options, staleTime: 30_000, gcTime: Infinity }
+  assert.equal(options.refetchOnMount, 'always')
+  queryClient.setQueryData(queryKey, riskAnalysis('old-but-fresh'))
+  let reads = 0
+  globalThis.fetch = async (url, request) => {
+    assert.match(url, /\/risk-analysis$/)
+    assert.equal(request.method, 'GET')
+    reads++
+    return reads === 3 ? failure(502, 'AI_UPSTREAM_ERROR') : json({ analysis: riskAnalysis(`saved-${reads}`) })
+  }
+  const observer = new QueryObserver(queryClient, options)
+  try {
+    for (let opening = 1; opening <= 4; opening++) {
+      const unsubscribe = observer.subscribe(() => undefined)
+      try {
+        assert.equal(observer.getCurrentResult().isFetching, true)
+        await query.promise.catch(() => undefined)
+        const result = observer.getCurrentResult()
+        assert.equal(reads, opening)
+        assert.equal(result.isFetching, false)
+        assert.equal(result.isSuccess, opening !== 3)
+        assert.equal(result.isError, opening === 3)
+        assert.equal(result.data.id, opening === 3 ? 'saved-2' : `saved-${opening}`)
+      } finally { unsubscribe() }
+    }
+  } finally { observer.destroy() }
+})
+
 test('风险分析 Hook 在写入新建议前取消旧读取，迟到响应不会覆盖新缓存', async () => {
   const { hook, queryKey, herbQueryKeys } = await createRiskHookHarness()
   let resolveOld

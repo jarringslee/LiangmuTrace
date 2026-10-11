@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "check:bundle": "node scripts/check-bundle.mjs",
     "lint": "eslint .",
-    "test": "node --test tests/auth.test.mjs tests/riskAnalysisDemo.test.mjs tests/riskAnalysisStream.test.mjs tests/herbQuestion.test.mjs tests/notifications.test.mjs tests/assistant.test.mjs tests/dashboard.test.mjs tests/chat.test.mjs tests/engineering.test.mjs tests/publicTrace.test.mjs tests/publicTraceQuery.test.mjs tests/publicTracePage.test.mjs tests/batchDispatchSupport.test.mjs tests/dispatchRecipients.test.mjs tests/batchDispatchPage.test.mjs tests/apiConfig.test.mjs",
+    "test": "node --test tests/auth.test.mjs tests/riskAnalysisDemo.test.mjs tests/riskAnalysisStream.test.mjs tests/riskAnalysisDrawer.test.mjs tests/herbQuestion.test.mjs tests/notifications.test.mjs tests/notificationRealtime.test.mjs tests/assistant.test.mjs tests/dashboard.test.mjs tests/chat.test.mjs tests/engineering.test.mjs tests/publicTrace.test.mjs tests/publicTraceQuery.test.mjs tests/publicTracePage.test.mjs tests/batchDispatchSupport.test.mjs tests/dispatchRecipients.test.mjs tests/batchDispatchPage.test.mjs tests/apiConfig.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -72,9 +72,22 @@ export default function RiskAnalysisDrawer({
         analysis &&
         !analysis.stale &&
         batch.auditStatus === 'pending' &&
+        query.isSuccess &&
+        !query.isPaused &&
         !busy &&
         !query.isFetching,
     )
+
+    const handleClose = () => {
+        // 人工审核是业务写入，提交期间不关闭，避免结果不明确。
+        if (review.isPending) return
+
+        // 先取消尚未完成的分析，再通知父组件卸载抽屉。
+        stopAnalyze()
+        onClose()
+    }
+
+
 
     const handleAnalyze = async () => {
         try {
@@ -125,10 +138,10 @@ export default function RiskAnalysisDrawer({
             open
             title={`风险审核 · ${batch.herbName}`}
             size={560}
-            closable={!busy}
-            keyboard={!busy}
-            mask={{ closable: !busy }}
-            onClose={onClose}
+            closable={!review.isPending}
+            keyboard={!review.isPending}
+            mask={{ closable: !review.isPending }}
+            onClose={handleClose}
         >
             <Space
                 orientation="vertical"
