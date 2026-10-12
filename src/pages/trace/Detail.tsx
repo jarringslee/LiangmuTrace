@@ -40,7 +40,7 @@ import {
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from '../../hooks/useAuth'
 import {
-  useHerbBatchByTraceCode,
+  useHerbBatchByIdentifier,
   useHerbBatchMutations,
 } from '../../hooks/useHerbBatches'
 import type { AuditDecision } from '../../services/herbDataSource'
@@ -128,7 +128,7 @@ export default function TraceDetailPage() {
     loading,
     error,
     reload,
-  } = useHerbBatchByTraceCode(traceCode)
+  } = useHerbBatchByIdentifier(traceCode)
   const { setAudit: auditMutation } = useHerbBatchMutations()
 
   /**
@@ -452,7 +452,7 @@ function BatchView({
                   <Descriptions.Item label="批次创建">
                     {batch.createdAt} · {batch.createdByRole === 'admin' ? '管理员' : '种植商'}
                   </Descriptions.Item>
-                  <Descriptions.Item label="最近更新" span={2}>
+                  <Descriptions.Item label="最近更新" span="filled">
                     {batch.updatedAt}
                   </Descriptions.Item>
                 </>

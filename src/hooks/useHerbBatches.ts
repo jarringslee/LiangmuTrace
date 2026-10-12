@@ -9,7 +9,7 @@
  * 3. 对外暴露三个常用入口：
  *    - `useHerbBatches()` —— 列表（admin / buyer / grower 都在用）
  *    - `useHerbBatchById(id)` —— 详情（按需启用，避免列表页面也拖详情）
- *    - `useHerbBatchByTraceCode(code)` —— 扫码、直接链接共用的详情
+ *    - `useHerbBatchByIdentifier(identifier)` —— 通知 ID、列表溯源码和直接链接共用的详情
  * 4. `useHerbBatchMutations()` 暴露 11 个 mutation，调用方按需取用。
  */
 import { useEffect } from 'react'
@@ -31,7 +31,7 @@ import {
   completeProcessingBatch,
   createHerbBatch,
   getHerbBatchById,
-  getHerbBatchByTraceCode,
+  getHerbBatchByIdentifier,
   harvestHerbBatch,
   listHerbBatches,
   receiveProcessingBatch,
@@ -306,19 +306,22 @@ export function useHerbBatchDetails(batches: HerbBatch[]) {
   }
 }
 
-/** 按溯源码读取详情，列表点击、扫码和直接链接均可复用。 */
-export function useHerbBatchByTraceCode(
-  traceCode: string | null | undefined,
+// 按批次id或溯源码读取详情，通知和列表入口共用
+
+export function useHerbBatchByIdentifier(
+  identifier: string | null | undefined,
 ) {
+  const value = identifier?.trim()
+
   const query = useQuery({
-    queryKey: traceCode
-      ? herbQueryKeys.detail(traceCode)
-      : [...herbQueryKeys.all, 'noop-trace'],
+    queryKey: value
+      ? herbQueryKeys.detail(value)
+      : [...herbQueryKeys.all, 'noop-detail'],
     queryFn: () =>
-      traceCode
-        ? getHerbBatchByTraceCode(traceCode)
+      value
+        ? getHerbBatchByIdentifier(value)
         : Promise.resolve(null),
-    enabled: Boolean(traceCode),
+    enabled: Boolean(value),
   })
 
   return {

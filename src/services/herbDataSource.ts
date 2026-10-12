@@ -529,6 +529,19 @@ export async function getHerbBatchByTraceCode(traceCode: string): Promise<HerbBa
     return getApiBatch(traceCode.trim().toUpperCase())
 }
 
+/** 完整详情允许使用批次 ID 或溯源码；不能统一改变大小写。 */
+export async function getHerbBatchByIdentifier(
+    identifier: string,
+): Promise<HerbBatch | null> {
+    const value = identifier.trim()
+    if (!value) return null
+
+    // 溯源码走原有规范化逻辑；数据库 ID 保留原样。
+    return isTraceCode(value)
+        ? getHerbBatchByTraceCode(value)
+        : getHerbBatchById(value)
+}
+
 /**
  * 获取匿名公开档案。
  * 与登录后的完整详情分开，不使用私有详情接口。

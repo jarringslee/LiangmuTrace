@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { afterEach, beforeEach, test } from 'node:test'
 import { createElement } from 'react'
 import { renderToString } from 'react-dom/server'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { createServer } from 'vite'
 
 let vite, source, authStorage, fixture, queryClient
@@ -25,19 +26,59 @@ const json = (value, status = 200, headers = {}) => new Response(JSON.stringify(
 async function setup(mode = 'api') {
   vite = await createServer({ cacheDir: `node_modules/.vite-tests/dispatch-recipients-${mode}`,
     server: { middlewareMode: true, hmr: false, watch: null },
+    ssr: { noExternal: ['antd', '@ant-design/icons'] },
     optimizeDeps: { noDiscovery: true, include: [] }, logLevel: 'silent',
     define: { 'import.meta.env.VITE_AUTH_MODE': JSON.stringify(mode), 'import.meta.env.VITE_API_BASE_URL': JSON.stringify('/api') },
     plugins: [{ name: 'dispatch-query-auth-fixture', enforce: 'pre',
       resolveId(source, importer) {
         const file = importer?.replaceAll('\\', '/')
+        if (source === 'virtual:trace-identifier-ui' ||
+          ['/pages/messages/index.tsx', '/pages/trace/Detail.tsx'].some(path => file?.endsWith(path)) &&
+          ['antd', '@ant-design/icons'].includes(source)) return '\0virtual:trace-identifier-ui'
+        if (source === 'virtual:trace-identifier-view' || file?.endsWith('/pages/trace/Detail.tsx') &&
+          ['../../components/herb/HerbQuestionPanel', '../../components/herb/TraceQuickViewModal',
+            '../../components/herb/TraceQrPanel', '../../components/herb/TraceTimeline',
+            '../../components/herb/herbTags'].includes(source)) return '\0virtual:trace-identifier-view'
         if (source === 'virtual:dispatch-query-auth' ||
           source === './auth' && file?.endsWith('/services/batchDispatchSupport.ts') ||
-          source === './useAuth' && file?.endsWith('/hooks/useDispatchRecipients.ts')) return '\0virtual:dispatch-query-auth'
+          source.endsWith('/useAuth') && ['/hooks/useDispatchRecipients.ts', '/hooks/useNotifications.ts',
+            '/pages/messages/index.tsx', '/pages/trace/Detail.tsx'].some(path => file?.endsWith(path))) return '\0virtual:dispatch-query-auth'
       },
-      load(id) { if (id === '\0virtual:dispatch-query-auth') return `
+      load(id) {
+        if (id === '\0virtual:trace-identifier-view') return `
+          export const AuditTag = () => null, RiskTag = () => null, StageTag = () => null
+          export default () => null
+        `
+        if (id === '\0virtual:trace-identifier-ui') return `
+          import { createElement } from 'react'
+          const box = ({ children, title, subTitle }) => createElement('div', null, title, subTitle, children)
+          export const Alert = box, Breadcrumb = box, Card = box, Col = box,
+            Dropdown = box, Empty = box, Flex = box, Result = box, Row = box, Space = box, Spin = box,
+            Tabs = box, Tag = box
+          export const Button = ({ children }) => createElement('button', null, children)
+          export const Layout = Object.assign(box, { Header: box, Content: box })
+          export const descriptionItems = []
+          export const Descriptions = Object.assign(box, { Item: (props) => {
+            descriptionItems.push({ label: props.label, span: props.span })
+            return box(props)
+          } })
+          export const Typography = { Title: box, Text: box, Paragraph: box }
+          export const theme = { useToken: () => ({ token: {} }) }
+          export const App = { useApp: () => ({ message: {}, modal: {} }) }
+          export const Table = ({ columns, dataSource }) => createElement('table', null,
+            createElement('tbody', null, dataSource.map(row => createElement('tr', { key: row.id },
+              columns.map((column, index) => createElement('td', { key: index },
+                column.render ? column.render(row[column.dataIndex], row) : row[column.dataIndex]))))))
+          export const ArrowLeftOutlined = () => null, BellOutlined = () => null,
+            MedicineBoxOutlined = () => null, ReloadOutlined = () => null, CheckCircleOutlined = () => null,
+            CloseCircleOutlined = () => null, EnvironmentOutlined = () => null, FileDoneOutlined = () => null,
+            HistoryOutlined = () => null, HomeOutlined = () => null, MoreOutlined = () => null,
+            PaperClipOutlined = () => null
+        `
+        if (id === '\0virtual:dispatch-query-auth') return `
         export const fixture = { status: 'authenticated', session: null }
         export const getAuthSnapshot = () => fixture
-        export const useAuth = () => fixture
+        export const useAuth = () => ({ ...fixture, isAuthenticated: fixture.status === 'authenticated' })
       ` },
     }],
   })
@@ -49,7 +90,8 @@ async function setup(mode = 'api') {
 }
 
 beforeEach(async () => {
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: new EventTarget() })
+  Object.defineProperty(globalThis, 'window', { configurable: true,
+    value: Object.assign(new EventTarget(), { location: { origin: 'http://localhost:5173' } }) })
   for (const name of ['localStorage', 'sessionStorage']) {
     const values = new Map()
     Object.defineProperty(globalThis, name, { configurable: true, value: {
@@ -141,6 +183,127 @@ test('批次 API 列表与 ID/溯源码详情都映射收货组织，收货能�
     assert.equal(value.buyerId, undefined); assert.equal(value.buyerName, undefined)
     assert.equal(value.canConfirmReceipt, false)
   }
+})
+
+test('通用详情数据源保留 ID 大小写，仅溯源码大写化；空输入不请求', async () => {
+  const mixedId = 'cmv28Lower_MiXeD'
+  const paths = []
+  globalThis.fetch = async (url, options) => {
+    paths.push(url); assert.equal(options.method, 'GET')
+    assert.equal(options.headers.Authorization, 'Bearer test-token')
+    return json({ batch: { ...apiBatch, id: mixedId } })
+  }
+  assert.equal((await source.getHerbBatchByIdentifier(`  ${mixedId}  `)).id, mixedId)
+  await source.getHerbBatchByIdentifier('  ym-trace-2026-0001  ')
+  assert.deepEqual(paths, [`/api/batches/${mixedId}`, '/api/batches/YM-TRACE-2026-0001'])
+  for (const input of ['', '  ', '\n\t']) assert.equal(await source.getHerbBatchByIdentifier(input), null)
+  assert.equal(paths.length, 2)
+})
+
+test('通用详情仅将 404 转为 null，权限/网络错误不回退 demo，旧身份响应仍丢弃', async () => {
+  let calls = 0
+  globalThis.fetch = async () => { calls++; return json({ error: { code: 'BATCH_NOT_FOUND' } }, 404) }
+  assert.equal(await source.getHerbBatchByIdentifier('cmv28Lower'), null)
+  for (const status of [403, 429, 503]) {
+    globalThis.fetch = async () => { calls++; return json({ error: { code: `HTTP_${status}` } }, status) }
+    await assert.rejects(source.getHerbBatchByIdentifier('cmv28Lower'), { status, code: `HTTP_${status}` })
+  }
+  globalThis.fetch = async () => { calls++; throw new TypeError('offline') }
+  await assert.rejects(source.getHerbBatchByIdentifier('cmv28Lower'), { code: 'NETWORK_ERROR' })
+  globalThis.fetch = async () => {
+    calls++; authStorage.setAccessToken('new-account-token'); return json({ batch: apiBatch })
+  }
+  await assert.rejects(source.getHerbBatchByIdentifier('cmv28Lower'), { name: 'AbortError' })
+  assert.equal(calls, 6)
+})
+
+test('demo 通用详情按原 ID 或规范化溯源码读取，继续裁剪非所属采购组织信息', async () => {
+  await vite.close(); await setup('demo')
+  const mixedId = 'cmv28Lower_MiXeD'
+  let calls = 0
+  globalThis.fetch = async (url) => {
+    calls++; assert.equal(url, '/data/herb-batches.json')
+    return json({ batches: [{ ...batch, id: mixedId }] })
+  }
+  fixture.session = buyer('other-org')
+  for (const input of [` ${mixedId} `, ` ${batch.traceCode.toLowerCase()} `]) {
+    const value = await source.getHerbBatchByIdentifier(input)
+    assert.equal(value.id, mixedId); assert.equal(value.buyerId, undefined)
+    assert.equal(value.buyerName, undefined); assert.equal(value.canConfirmReceipt, false)
+  }
+  assert.equal(await source.getHerbBatchByIdentifier(mixedId.toUpperCase()), null)
+  assert.equal(await source.getHerbBatchByIdentifier('missing'), null)
+  assert.equal(calls, 1)
+})
+
+async function identifierHarness() {
+  const { QueryClient, QueryClientProvider } = await vite.ssrLoadModule('@tanstack/react-query')
+  const { useHerbBatchByIdentifier, herbQueryKeys } = await vite.ssrLoadModule('/src/hooks/useHerbBatches.ts')
+  queryClient = new QueryClient({ defaultOptions: { queries: { gcTime: Infinity, retry: false } } })
+  let hook
+  function Harness({ input }) { hook = useHerbBatchByIdentifier(input); return null }
+  const render = (input) => {
+    renderToString(createElement(QueryClientProvider, { client: queryClient }, createElement(Harness, { input })))
+    return hook
+  }
+  return { render, keys: herbQueryKeys, QueryClientProvider }
+}
+
+test('通用详情 Hook 使用去空格但保留大小写的 key 和真实数据源，缺少标识不启用', async () => {
+  const { render, keys } = await identifierHarness()
+  const mixedId = 'cmv28Lower_MiXeD'
+  let calls = 0
+  globalThis.fetch = async (url) => {
+    calls++; assert.equal(url, `/api/batches/${mixedId}`)
+    return json({ batch: { ...apiBatch, id: mixedId } })
+  }
+  render(` ${mixedId} `)
+  const query = queryClient.getQueryCache().find({ queryKey: keys.detail(mixedId), exact: true })
+  assert.equal(query.options.enabled, true)
+  assert.equal((await queryClient.fetchQuery(query.options)).id, mixedId)
+  assert.equal(render(mixedId).data.id, mixedId)
+  for (const input of [undefined, null, '', '  ']) {
+    render(input)
+    const disabled = queryClient.getQueryCache().find({ queryKey: [...keys.all, 'noop-detail'], exact: true })
+    assert.equal(disabled.options.enabled, false)
+    assert.equal(await disabled.options.queryFn({}), null)
+  }
+  assert.equal(calls, 1)
+})
+
+test('真实通知页面输出 ID 链接，详情页面通过通用 Hook 读取同一批次', async () => {
+  // 执行真实页面/路由/Query/数据源；身份、网络、视觉组件为 fixture。
+  // SSR 不验证浏览器点击、Effect 或 AntD 布局/动画，实际页面复验另做。
+  const { keys, QueryClientProvider } = await identifierHarness()
+  const mixedId = 'cmv28Lower_MiXeD'
+  const notification = { id: 'notice-28', batchId: mixedId, type: 'auditResult', title: '黄芪审核通过',
+    content: '第28刀测试通知', createdAt: '2026-10-12T08:00:00.000Z', readAt: null }
+  queryClient.setQueryData(['notifications', 'api', admin.userId, { page: 1, pageSize: 10, status: 'all' }],
+    { items: [notification], total: 1, unreadCount: 1, page: 1, pageSize: 10 })
+  const Messages = (await vite.ssrLoadModule('/src/pages/messages/index.tsx')).default
+  const messageHtml = renderToString(createElement(QueryClientProvider, { client: queryClient },
+    createElement(MemoryRouter, { initialEntries: ['/messages'] }, createElement(Messages))))
+  const target = `/trace/${encodeURIComponent(mixedId)}`
+  assert.ok(messageHtml.includes(`href="${target}"`), '通知使用原 ID 构造链接')
+  let calls = 0
+  globalThis.fetch = async (url) => {
+    calls++; assert.equal(url, `/api/batches/${mixedId}`)
+    return json({ batch: { ...apiBatch, id: mixedId } })
+  }
+  const Detail = (await vite.ssrLoadModule('/src/pages/trace/Detail.tsx')).default
+  const renderDetail = () => renderToString(createElement(QueryClientProvider, { client: queryClient },
+    createElement(MemoryRouter, { initialEntries: [target] }, createElement(Routes, null,
+      createElement(Route, { path: '/trace/:traceCode', element: createElement(Detail) })))))
+  renderDetail()
+  const query = queryClient.getQueryCache().find({ queryKey: keys.detail(mixedId), exact: true })
+  assert.equal(query.options.enabled, true)
+  await queryClient.fetchQuery(query.options)
+  const detailHtml = renderDetail()
+  assert.ok(detailHtml.includes(mixedId)); assert.ok(detailHtml.includes('黄芪'))
+  assert.ok(!detailHtml.includes('未找到该溯源批次')); assert.equal(calls, 1)
+  const { descriptionItems } = await vite.ssrLoadModule('virtual:trace-identifier-ui')
+  assert.equal(descriptionItems.find(item => item.label === '最近更新').span, 'filled',
+    '最近更新填满当前行剩余列，不写死跨列数；实际响应式布局另作浏览器验证')
 })
 
 async function hookHarness() {
