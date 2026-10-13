@@ -66,6 +66,8 @@ import type { UserRole } from '../../types/auth'
 import '../dashboard/index.less'
 import './Detail.less'
 
+import { getAttachmentHref } from '../../utils/attachmentUrl'
+
 const { Header, Content } = Layout
 const { Title, Text, Paragraph } = Typography
 
@@ -107,11 +109,6 @@ function collectAttachments(batch: HerbBatch, role: UserRole): AttachmentRow[] {
   )
 }
 
-/** 是否为可直接打开的真实附件地址（排除占位的 "#" / 空值） */
-function isRealAttachmentUrl(url: string): boolean {
-  if (!url || url === '#') return false
-  return /^(https?:|data:|blob:|\/)/.test(url)
-}
 
 export default function TraceDetailPage() {
   const { message, modal } = AntdApp.useApp()
@@ -520,7 +517,7 @@ function BatchView({
             ) : (
               <div className="trace-detail__attach-list">
                 {attachments.map((a) => {
-                  const real = isRealAttachmentUrl(a.url)
+                  const href = getAttachmentHref(a.url)
                   const body = (
                     <>
                       <PaperClipOutlined className="trace-detail__attach-icon" />
@@ -528,6 +525,7 @@ function BatchView({
                         <div className="trace-detail__attach-name">{a.name}</div>
                         <div className="trace-detail__attach-meta">
                           <Tag variant="filled">{EVENT_TYPE_LABEL[a.eventType]}</Tag>
+                          {!href && <Tag>仅元数据，暂无文件</Tag>}
                           <Text type="secondary" style={{ fontSize: 12 }}>
                             {a.eventTitle} · {a.occurredAt}
                           </Text>
@@ -536,12 +534,12 @@ function BatchView({
                     </>
                   )
                   const key = a.url + a.name + a.occurredAt
-                  return real ? (
+                  return href ? (
                     <a
                       key={key}
-                      href={a.url}
+                      href={href}
                       target="_blank"
-                      rel="noreferrer"
+                      rel="noopener noreferrer"
                       className="trace-detail__attach-item"
                     >
                       {body}
@@ -552,7 +550,7 @@ function BatchView({
                       type="button"
                       className="trace-detail__attach-item"
                       onClick={() =>
-                        message.info('演示环境：该附件为示例占位，待接入文件存储后可下载查看')
+                        message.info('该附件仅有登记元数据，尚未提供可打开的文件')
                       }
                     >
                       {body}

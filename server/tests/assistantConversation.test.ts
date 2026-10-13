@@ -140,6 +140,19 @@ test('普通聊天追问“刚才/是什么”继承普通模式，带标签也�
   assert.equal(h.lookups.length, 0)
   assert.equal((await h.service.send(user, input('本批次来源是什么？', 'A'))).reply!.scope, 'batch')
 })
+test('出现平台/系统不应覆盖具体批次事实意图，功能帮助仍走普通模式', async () => {
+  const h = setup()
+  for (const question of ['平台登记的本批次产地在哪里？', '系统中的这个批次现在是什么阶段？']) {
+    const result = await h.service.send(user, input(question, 'A'))
+    assert.equal(result.reply!.scope, 'batch', question)
+    const payload = JSON.parse(h.requests.at(-1)!.at(-1)!.content!)
+    assert.ok(payload.sources.some((source: { id: string }) => source.id.startsWith('batch:')))
+  }
+  for (const question of ['平台有哪些药材相关功能？', '系统怎么使用？', '平台客服聊天现在可以使用吗？']) {
+    assert.equal((await h.service.send(user, input(question, 'A'))).reply!.scope, 'general', question)
+  }
+})
+
 test('明确批次号/溯源码覆盖旧标签，多个编号澄清，无权限不入库不调用模型', async () => {
   const h = setup()
   const result = await h.service.send(user, input('对于 YM-B，这是什么', 'A'))

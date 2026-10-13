@@ -22,6 +22,8 @@ import type { UserRole } from '../../types/auth'
 import { filterEventsForRole } from '../../utils/herbEvents'
 import './TraceTimeline.less'
 
+import { getAttachmentHref } from '../../utils/attachmentUrl'
+
 const { Text } = Typography
 
 const EVENT_ICON: Record<EventType, React.ReactNode> = {
@@ -127,14 +129,24 @@ function EventCard({ event }: { event: BatchEvent }) {
         </div>
       ) : null}
       {event.attachments && event.attachments.length > 0 ? (
+        // 有允许的地址才渲染链接，否则明确展示登记信息，不再出现 href="#" 的假入口。
         <div className="trace-timeline__event-attachments">
-          {event.attachments.map((a) => (
-            <Tag key={a.url + a.name} icon={<PaperClipOutlined />}>
-              <a href={a.url} target="_blank" rel="noreferrer">
-                {a.name}
-              </a>
-            </Tag>
-          ))}
+          {event.attachments.map((a) => {
+            const href = getAttachmentHref(a.url)
+            return (
+              <Tag key={a.url + a.name} icon={<PaperClipOutlined />}>
+                {href ? (
+                  <a href={href} target="_blank" rel="noopener noreferrer">
+                    {a.name}
+                  </a>
+                ) : (
+                  <Text type="secondary">
+                    {a.name}（仅元数据，暂无文件）
+                  </Text>
+                )}
+              </Tag>
+            )
+          })}
         </div>
       ) : null}
     </div>

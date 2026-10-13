@@ -105,11 +105,14 @@ export function createAssistantConversationService(options: {
     // 明确编号优先于旧标签；多个编号不猜测、不跨组织枚举。
     const codes = [...new Set((input.question.match(/\bYM-(?:[A-Z0-9]+-)*[A-Z0-9]+\b/gi) ?? []).map((code) => code.toUpperCase()))]
     const plain = input.question.replace(/^对于[^，,\n]{1,150}[，,]\s*/u, '').trim()
-    let ordinary = /^(你好|您好|嗨|hello|hi|谢谢|感谢|再见)[！!。.?？\s]*$/iu.test(plain)
-      || /系统|平台|怎么使用|如何使用|你是谁|你能做什么|React|JavaScript|TypeScript|前端|算法/iu.test(plain)
     const herbNames = [...new Set(knowledgeChunks.map((chunk) => chunk.herbName))]
     const batchTopic = /批次|药材|产地|产区|来源|外观|阶段|状态|质检|加工|审核|风险|仓储|收货/u.test(plain)
       || herbNames.some((name) => plain.includes(name))
+    const systemHelp = /(?:系统|平台).*(?:功能|使用|入口|客服|聊天室|消息中心|订单|支付)/u.test(plain)
+    // “平台登记的批次产地”仍是事实问题；不能仅因出现平台/系统而跳过 RAG。
+    let ordinary = /^(你好|您好|嗨|hello|hi|谢谢|感谢|再见)[！!。.?？\s]*$/iu.test(plain)
+      || systemHelp || !batchTopic
+        && /系统|平台|怎么使用|如何使用|你是谁|你能做什么|React|JavaScript|TypeScript|前端|算法/iu.test(plain)
     const followup = /继续|详细|展开|再说|刚才|上一|为什么/u.test(plain)
     // 普通交流的追问继承普通模式；不能只凭“刚才/是什么”强制走批次 RAG。
     if (!ordinary && !codes.length && !batchTopic && followup) {

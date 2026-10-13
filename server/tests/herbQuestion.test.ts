@@ -108,6 +108,25 @@ test('未收录药材基础介绍无命中不调用模型，但批次产地仍�
   assert.equal(calls, 1)
 })
 
+test('模型状态资料使用中文展示词，已收货不等于已支付，不修改原枚举', () => {
+  const batch = fixture()
+  for (const [stage, expected] of Object.entries({ planting: '种植中', harvested: '已采收',
+    processing: '加工中', warehousing: '仓储', shipped: '已出库', sold: '已收货' })) {
+    batch.stage = stage as BatchDetailRecord['stage']
+    batch.riskLevel = 'low'
+    const source = buildQuestionBatchSources(batch).find((item) => item.id === 'batch:status')!
+    assert.match(source.excerpt, new RegExp(`当前阶段：${expected}`))
+    assert.match(source.excerpt, /审核状态：审核通过；风险等级：低风险/)
+    assert.doesNotMatch(source.excerpt, /已支付|warehousing|approved/)
+    assert.equal(batch.stage, stage)
+  }
+  batch.events.push({ id: 'audit-label', type: 'audit', title: '审核通过', description: null,
+    payload: null, occurredAt: new Date(), createdAt: new Date(), operatorName: null,
+    operatorRole: null, visibleRoles: [], fromStage: null, toStage: null, attachments: [] })
+  assert.equal(buildQuestionBatchSources(batch).find((source) => source.id === 'event:audit-label')!.title,
+    '审核 · 审核通过')
+})
+
 test('问答只调用一次模型，返回服务端映射的引用与知识版本，不改变批次', async () => {
   const { service, batch, reads } = setup()
   const before = structuredClone(batch)

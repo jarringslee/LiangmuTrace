@@ -42,6 +42,26 @@ test('普通聊天只有系统/本轮问题，不传历史、工具或批次，�
   assert.equal('userId' in reply, false)
 })
 
+test('功能提示不再错报聊天室未实现，单轮/持久化历史能力明确区分', async () => {
+  const prompts: string[] = []
+  const service = createAssistantService({ ...mockModel(), async complete(request) {
+    prompts.push(request.messages[0].content!)
+    return mockModel().complete(request)
+  } })
+  await service.ask(user, { question: '平台客服聊天现在可以使用吗？' })
+  await service.ask(user, { question: '平台客服聊天现在可以使用吗？' }, undefined, [], true)
+  for (const prompt of prompts) {
+    assert.match(prompt, /人工聊天已实现/)
+    assert.match(prompt, /采购商仅联系平台客服/)
+    assert.doesNotMatch(prompt, /人工聊天室尚在开发/)
+    assert.match(prompt, /不提供订单\/支付/)
+  }
+  assert.match(prompts[0], /单轮聊天.*没有历史消息/)
+  assert.match(prompts[1], /最多4轮相关历史/)
+  assert.match(prompts[1], /实际提供的历史/)
+  assert.doesNotMatch(prompts[1], /本接口为单轮聊天/)
+})
+
 test('问题严格校验，不接受伪造身份/批次/历史，医疗问题直接拒答', async () => {
   for (const body of [{ question: ' ' }, { question: 'a'.repeat(501) }, { question: '你好', role: 'admin' },
     { question: '你好', batchId: 'other' }, { question: '你好', messages: [] }]) {

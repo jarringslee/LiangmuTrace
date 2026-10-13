@@ -28,6 +28,22 @@ export type HerbQuestionReply = {
   createdAt: string
 }
 
+// 只转换模型看到的展示词，数据库/API 枚举保持不变；sold 表示已收货而非支付完成。
+const stageLabels: Record<BatchDetailRecord['stage'], string> = {
+  planting: '种植中', harvested: '已采收', processing: '加工中',
+  warehousing: '仓储', shipped: '已出库', sold: '已收货',
+}
+const auditLabels: Record<BatchDetailRecord['auditStatus'], string> = {
+  pending: '待审核', approved: '审核通过', rejected: '已驳回',
+}
+const riskLabels: Record<BatchDetailRecord['riskLevel'], string> = {
+  normal: '正常', low: '低风险', medium: '中风险', high: '高风险',
+}
+const eventLabels: Record<BatchDetailRecord['events'][number]['type'], string> = {
+  create: '建档', audit: '审核', stageChange: '阶段变更', qcReport: '质检',
+  storage: '仓储', transport: '运输', transaction: '交易记录', note: '备注',
+}
+
 /** 只使用 detail 已裁剪的资料；不把完整数据库对象或 AI 审核建议传给模型。 */
 export function buildQuestionBatchSources(batch: BatchDetailRecord): QuestionSource[] {
   const create = (id: string, title: string, excerpt: string): QuestionSource => ({
@@ -38,13 +54,13 @@ export function buildQuestionBatchSources(batch: BatchDetailRecord): QuestionSou
       `药材名称：${batch.herbName}；批次号：${batch.batchNo}；溯源码：${batch.traceCode}。`),
     create('batch:origin', '本批次登记产地', JSON.stringify(batch.origin)),
     create('batch:status', '本批次当前阶段、审核状态与风险等级',
-      `当前阶段：${batch.stage}；审核状态：${batch.auditStatus}；风险等级：${batch.riskLevel}。这些字段不是药物安全检测结论。`),
+      `当前阶段：${stageLabels[batch.stage]}；审核状态：${auditLabels[batch.auditStatus]}；风险等级：${riskLabels[batch.riskLevel]}。这些字段不是药物安全检测结论。`),
   ]
   for (const event of batch.events.slice(-20)) {
     const payload = event.payload
     if (payload && typeof payload === 'object' && !Array.isArray(payload)
       && payload.kind === 'auditRiskAnalysis') continue
-    sources.push(create(`event:${event.id}`, `${event.type} · ${event.title.slice(0, 120)}`,
+    sources.push(create(`event:${event.id}`, `${eventLabels[event.type]} · ${event.title.slice(0, 120)}`,
       `${event.occurredAt.toISOString()}；${event.description?.slice(0, 400) ?? '无文字说明'}`))
   }
   return sources

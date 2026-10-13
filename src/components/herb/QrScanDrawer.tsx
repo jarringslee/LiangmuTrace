@@ -350,7 +350,7 @@ function LiveScanTab({ active, onHit }: { active: boolean; onHit: (raw: string) 
   return (
     <Space orientation="vertical" size={12} style={{ width: '100%' }}>
       <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-        将摄像头对准溯源二维码，识别成功后会自动跳转到详情页。
+        将摄像头对准溯源二维码，识别成功后会打开对应批次的溯源信息。
       </Paragraph>
 
       {isInsecureHttp ? (
@@ -510,7 +510,8 @@ function ImageScanTab({
 
         const msg = e instanceof Error ? e.message : String(e)
 
-        if (/No.*QR|not found|unable/i.test(msg)) {
+        // html5-qrcode 的无命中错误也可能是 No MultiFormat Readers...，统一给可操作提示。
+        if (/No.*QR|not found|unable|no.*readers.*detect/i.test(msg)) {
           setErrMsg('未能在该图片中识别到二维码，请尝试更清晰的截图。')
         } else {
           setErrMsg(`识别失败：${msg}`)
@@ -532,7 +533,7 @@ function ImageScanTab({
   return (
     <Space orientation="vertical" size={12} style={{ width: '100%' }}>
       <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-        上传一张包含溯源二维码的图片（截图或拍照），系统将自动识别并跳转到详情页。
+        上传一张包含溯源二维码的图片（截图或拍照），系统将自动识别并打开对应批次的溯源信息。
       </Paragraph>
 
       <Upload.Dragger

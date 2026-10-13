@@ -238,7 +238,11 @@ test('权限错误有兜底提示，失败后可手动重试；停止后回到 i
 })
 
 test('未启用的扫码标签不访问摄像头，父抽屉正确传递图片标签启用状态', async () => {
-  mount(Live, { active: false, onHit: () => {} }); await flush(); assert.deepEqual(fixture.instances, [])
+  const inactiveLive = mount(Live, { active: false, onHit: () => {} })
+  await flush(); assert.deepEqual(fixture.instances, [])
+  assert.match(find(inactiveLive.tree, 'Paragraph')[0].children, /打开对应批次的溯源信息/)
+  const inactiveImage = mount(Image, { active: false, onHit: () => {} })
+  assert.match(find(inactiveImage.tree, 'Paragraph')[0].children, /打开对应批次的溯源信息/)
   const props = { open: true, onClose: () => {}, onResult: () => {} }, run = mount(Drawer, props)
   let tabs = find(run.tree, 'Tabs')[0]
   assert.equal(tabs.items.find(item => item.key === 'image').children.props.active, false)
@@ -259,6 +263,21 @@ test('图片预览更换/卸载释放 URL；beforeUpload 返回 false，不执�
   run.unmount(); assert.deepEqual(revoked, ['blob:fixture-0', 'blob:fixture-1'])
   assert.deepEqual(hits, [code, code])
   assert.equal(fixture.calls.filter(call => call[0] === 'file').every(call => call[3] === false), true)
+})
+
+test('真实解码器的无命中错误转换为中文提示，可继续选择图片重试', async () => {
+  fixture.files.push(Promise.reject(new Error('No MultiFormat Readers were able to detect the code.')))
+  const hits = [], props = { active: true, onHit: value => hits.push(value) }, run = mount(Image, props)
+  assert.equal(await find(run.tree, 'Dragger')[0].beforeUpload({ name: 'no-qr.png' }), false)
+  run.render(Image, props); run.commit()
+  assert.match(find(run.tree, 'Alert')[0].title, /未能.*识别到二维码/)
+  assert.doesNotMatch(find(run.tree, 'Alert')[0].title, /MultiFormat|Readers/)
+  assert.equal(find(run.tree, 'Dragger')[0].disabled, false)
+  assert.deepEqual(hits, [])
+  assert.equal(await find(run.tree, 'Dragger')[0].beforeUpload({ name: 'qr.png' }), false)
+  run.render(Image, props); run.commit()
+  assert.equal(find(run.tree, 'Alert').length, 0)
+  assert.deepEqual(hits, [code])
 })
 
 test('图片异步解析同步防重；切换标签后成功结果也不能跳转', async () => {
