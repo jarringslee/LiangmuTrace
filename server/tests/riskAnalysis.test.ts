@@ -26,7 +26,7 @@ const admin: AuthUser = {
 const buyer: AuthUser = { ...admin, id: 'buyer', role: 'buyer' }
 const result = {
   riskLevel: 'normal', recommendation: 'approve', summary: '现有项目资料完整，由管理员复核。',
-  missingInformation: [], evidence: [{ sourceId: 'batch:identity', note: '批次建档资料已读取' }],
+  evidence: [{ sourceId: 'batch:identity', note: '批次建档资料已读取' }],
 }
 
 function fixture(): BatchDetailRecord & { canConfirmReceipt: boolean } {
@@ -69,7 +69,7 @@ function mockModel(output: unknown = result): AuditModel {
   }
 }
 
-function setup(model = mockModel()) {
+function setup(model = mockModel(), currentUser: () => Promise<AuthUser> = async () => admin) {
   const batch = fixture()
   let saveCount = 0
   let reviewCount = 0
@@ -99,7 +99,7 @@ function setup(model = mockModel()) {
       return true
     },
   }
-  const service = createRiskAnalysisService({ detail: async () => structuredClone(batch) }, repository, model)
+  const service = createRiskAnalysisService({ detail: async () => structuredClone(batch) }, repository, model, { currentUser })
   return { service, batch, writes: () => ({ saveCount, reviewCount }) }
 }
 
@@ -110,6 +110,8 @@ test('分析执行两个只读工具、记录建议但不改变审核结果，�
   assert.equal(batch.auditStatus, 'pending')
   assert.equal(batch.riskLevel, 'normal')
   assert.equal(batch.version, 2)
+  assert.equal(analysis.promptVersion, 'audit-risk-v2')
+  assert.match(analysis.evidence[0]!.sourceText!, /丹参.*种植中/)
   assert.deepEqual(batch.events.at(-1)?.visibleRoles, ['admin'])
   assert.equal((await service.latest(admin, batch.id))?.stale, false)
   await service.review(admin, batch.id, analysis.id, {
@@ -131,16 +133,78 @@ test('资料缺失与已有风险等级不能被模型降低为正常，种植�
   assert.equal(analysis.riskLevel, 'low')
   assert.equal(analysis.recommendation, 'manualReview')
   assert.match(analysis.missingInformation.join(), /种植环境/)
+  assert.match(analysis.summary, /服务端规则校正/)
   batch.riskLevel = 'high'
   const repeated = await service.analyze(admin, batch.id)
   assert.equal(repeated.riskLevel, 'high')
   assert.equal(repeated.recommendation, 'manualReview')
 })
 
+test('当前阶段检查明确排除未来资料；仓储需要非空质检文字，而非占位事件', () => {
+  const batch = fixture()
+  for (const stage of ['planting', 'harvested', 'processing'] as const) {
+    batch.stage = stage
+    const facts = buildAuditFacts(batch)
+    assert.deepEqual(facts.missingInformation, [])
+    assert.ok(facts.reviewPolicy.notRequiredNow.some(item => item.includes('质检')))
+    assert.ok(facts.reviewPolicy.excludedChecks.some(item => item.includes('PDF')))
+  }
+  batch.stage = 'warehousing'
+  batch.events.push({ ...batch.events[0]!, id: 'empty-qc', type: 'qcReport', description: '   ' })
+  assert.match(buildAuditFacts(batch).missingInformation.join(), /质检文字/)
+  batch.events.at(-1)!.description = '已登记质检文字摘要，不代表真实检验认证'
+  assert.deepEqual(buildAuditFacts(batch).missingInformation, [])
+  batch.events.at(-1)!.title = '检'.repeat(110)
+  batch.events.at(-1)!.description = '测'.repeat(600)
+  assert.equal(buildAuditFacts(batch).evidence.find(item => item.sourceId === 'event:empty-qc')!.note.length, 600)
+})
+
+test('模型等待后管理员撤权/停用/换组织，不保存建议；恢复身份后运行锁可释放', async () => {
+  for (const changed of [buyer, { ...admin, organizationId: 'other' }, null]) {
+    let current: AuthUser | null = admin
+    let revoke = true
+    const h = setup({ ...mockModel(), complete: async input => {
+      if (input.json && revoke) { current = changed; revoke = false }
+      return mockModel().complete(input)
+    } }, async () => {
+      if (!current) throw new HttpError(403, 'ACCOUNT_DISABLED', '账号已停用')
+      return current
+    })
+    await assert.rejects(h.service.analyze(admin, h.batch.id), { status: 403 })
+    assert.equal(h.writes().saveCount, 0)
+    current = admin
+    await h.service.analyze(admin, h.batch.id)
+    assert.equal(h.writes().saveCount, 1)
+    current = changed
+    await assert.rejects(h.service.review(admin, h.batch.id, h.batch.events.at(-1)!.id, {
+      decision: 'approved', riskLevel: 'normal', reason: '不可再由旧身份审核',
+    }), { status: 403 })
+    assert.equal(h.writes().reviewCount, 0)
+  }
+})
+
+test('v1 历史建议可读取，新建议保存服务端原文；模型不能覆盖缺失项和原文', async () => {
+  const h = setup()
+  const analysis = await h.service.analyze(admin, h.batch.id)
+  const { stale, ...stored } = analysis
+  assert.equal(stale, false)
+  const noSnapshot = stored.evidence.map(({ sourceId, note }) => ({ sourceId, note }))
+  h.batch.events.at(-1)!.payload = { kind: 'auditRiskAnalysis', analysis: { ...stored, evidence: noSnapshot } }
+  assert.equal(await h.service.latest(admin, h.batch.id), null, '不将损坏的 v2 静默降级为无原文报告')
+  const old = { ...stored, promptVersion: 'audit-risk-v1',
+    evidence: noSnapshot }
+  h.batch.events.at(-1)!.payload = { kind: 'auditRiskAnalysis', analysis: old }
+  const restored = await h.service.latest(admin, h.batch.id)
+  assert.equal(restored?.promptVersion, 'audit-risk-v1')
+  assert.equal(restored?.evidence[0]!.sourceText, undefined)
+})
+
 test('不存在的引用来源、非法 JSON 和非法风险枚举被拒绝且不写建议', async () => {
   for (const output of [
     { ...result, evidence: [{ sourceId: 'invented:source', note: '伪造来源' }] },
     { ...result, riskLevel: 'safe' },
+    { ...result, missingInformation: ['未来运输报告'] },
+    { ...result, evidence: [{ sourceId: 'batch:identity', note: '伪造原文', sourceText: '医学安全已证明' }] },
   ]) {
     const { service, batch, writes } = setup(mockModel(output))
     await assert.rejects(service.analyze(admin, batch.id), { code: 'AI_INVALID_RESULT' })
@@ -194,6 +258,7 @@ test('分析期间数据变化会拒绝保存；建议保存后数据变化会�
     { detail: async () => structuredClone(first.batch) },
     { save: async ({ analysis }) => analysis.basedOnVersion === first.batch.version, review: async () => true },
     wrapped,
+    { currentUser: async () => admin },
   )
   await assert.rejects(service.analyze(admin, first.batch.id), { code: 'AI_ANALYSIS_STALE' })
   const second = setup()

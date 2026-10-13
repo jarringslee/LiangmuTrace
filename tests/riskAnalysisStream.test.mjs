@@ -83,6 +83,20 @@ test('SSE 拒绝无 result、错误顺序/批次/JSON/UTF-8、超大消息及非
   }
 })
 
+test('SSE 兼容 v1/v2 报告，v2 原文必须为有界字符串，不接受未知版本', async () => {
+  const updated = { ...analysis, promptVersion: 'audit-risk-v2',
+    evidence: [{ sourceId: 'batch:origin', note: '产地已登记', sourceText: '甘肃省定西市' }] }
+  globalThis.fetch = async () => streamResponse(frame('result', { analysis: updated }))
+  assert.deepEqual(await source.streamBatchRisk('batch-test', options()), updated)
+  for (const invalid of [{ ...updated, promptVersion: 'unknown' },
+    { ...updated, evidence: [{ sourceId: 'batch:origin', note: 'v2 缺少资料快照' }] },
+    { ...updated, evidence: [{ ...updated.evidence[0], sourceText: {} }] },
+    { ...updated, evidence: [{ ...updated.evidence[0], sourceText: 'x'.repeat(601) }] }]) {
+    globalThis.fetch = async () => streamResponse(frame('result', { analysis: invalid }))
+    await assert.rejects(source.streamBatchRisk('batch-test', options()), { code: 'STREAM_INVALID' })
+  }
+})
+
 test('SSE 中的业务错误保留错误码，不自动重试或误清理登录', async () => {
   let calls = 0, authFailures = 0
   api.setAuthFailureHandler(() => { authFailures += 1 })

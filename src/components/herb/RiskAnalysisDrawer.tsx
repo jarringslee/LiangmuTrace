@@ -310,7 +310,7 @@ export default function RiskAnalysisDrawer({
                         {analysis.missingInformation.length > 0 && (
                             <Alert
                                 type="warning"
-                                title="需要补充或人工核对的资料"
+                                title={analysis.promptVersion === 'audit-risk-v2' ? '当前阶段规则发现的缺失资料' : '需要补充或人工核对的资料'}
                                 description={
                                     <ul>
                                         {analysis.missingInformation.map((item) => (
@@ -335,7 +335,14 @@ export default function RiskAnalysisDrawer({
                         {analysis.evidence.map((item, index) => (
                             <div key={`${item.sourceId}-${index}`}>
                                 <Text code>{item.sourceId}</Text>
-                                <Paragraph>{item.note}</Paragraph>
+                                <Paragraph>模型判断：{item.note}</Paragraph>
+                                {item.sourceText !== undefined ? (
+                                    <Paragraph type="secondary" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+                                        服务端提供的资料：{item.sourceText}
+                                    </Paragraph>
+                                ) : (
+                                    <Text type="secondary">旧建议未保存原文快照，请对照批次档案核对。</Text>
+                                )}
                             </div>
                         ))}
 

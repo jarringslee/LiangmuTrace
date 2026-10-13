@@ -36,7 +36,8 @@ before(async () => {
           export const fixture = { hook: {}, buttons: [], drawers: [], forms: [], calls: [], values: [] }
           export const useBatchRiskAnalysis = () => fixture.hook
           const box = ({ children }) => createElement('div', null, children)
-          export const Alert = box, Divider = box, Empty = box, Select = box, Space = box,
+          export const Alert = ({ title, description, children }) => createElement('div', null, title, description, children)
+          export const Divider = box, Empty = box, Select = box, Space = box,
             Spin = box, Tag = box, Timeline = box
           export const RobotOutlined = () => null, RiskTag = () => null
           export const Typography = { Text: box, Title: box, Paragraph: box }
@@ -84,7 +85,7 @@ beforeEach(() => {
 function renderDrawer(currentBatch = batch) {
   fixture.buttons = []; fixture.drawers = []; fixture.forms = []
   // SSR 不执行卸载 Effect；替身只验证关闭/提交事件与组件属性，不验证 AntD 动画或真机交互。
-  renderToString(createElement(Drawer, { batch: currentBatch, onClose: () => fixture.calls.push(['close']) }))
+  return renderToString(createElement(Drawer, { batch: currentBatch, onClose: () => fixture.calls.push(['close']) }))
 }
 const button = (label) => fixture.buttons.find((props) => props.children === label)
 
@@ -167,4 +168,18 @@ test('人工审核失败保留窗口与表单，不关闭、不显示成功提�
   renderDrawer()
   await fixture.forms[0].onFinish(reviewInput)
   assert.deepEqual(fixture.calls, [])
+})
+
+test('v2 区分模型判断与服务端资料并按文本转义，v1 不伪造原文快照', () => {
+  fixture.hook.query.data = { ...analysis(), promptVersion: 'audit-risk-v2', missingInformation: ['缺少种植环境说明'],
+    evidence: [{ sourceId: 'batch:origin', note: '需要核对产地', sourceText: '<script>合成恶意资料</script>' }] }
+  const html = renderDrawer()
+  assert.match(html, /当前阶段规则发现的缺失资料/)
+  assert.match(html, /模型判断：/)
+  assert.match(html, /服务端提供的资料：/)
+  assert.match(html, /&lt;script&gt;/)
+  assert.doesNotMatch(html, /<script>/)
+  fixture.hook.query.data = { ...analysis(), promptVersion: 'audit-risk-v1',
+    evidence: [{ sourceId: 'batch:origin', note: '旧模型判断' }] }
+  assert.match(renderDrawer(), /旧建议未保存原文快照/)
 })

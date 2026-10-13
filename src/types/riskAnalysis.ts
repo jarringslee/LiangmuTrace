@@ -13,14 +13,14 @@ export type RiskAnalysis = {
   basedOnVersion: number
   reviewVersion: number
   modelName: string
-  promptVersion: 'audit-risk-v1'
+  promptVersion: 'audit-risk-v1' | 'audit-risk-v2'
   createdAt: string
   mode: 'api' | 'demo'
   riskLevel: RiskLevel
   recommendation: RiskRecommendation
   summary: string
   missingInformation: string[]
-  evidence: { sourceId: string; note: string }[]
+  evidence: { sourceId: string; note: string; sourceText?: string }[]
   toolCalls: {
     name: 'get_batch_snapshot' | 'inspect_trace_records'
     summary: string

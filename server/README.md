@@ -227,6 +227,10 @@ MVP 暂不实现 Refresh Token 和服务端登出撤销：客户端退出时删�
 
 Agent 使用 `get_batch_snapshot`、`inspect_trace_records` 两个只读工具。工具参数不接受其他批次 ID；最多三轮取数、六次工具执行和一次最终 JSON 输出。服务端使用 Zod 校验结果并检查引用 ID 来自本轮资料；资料缺失或已有风险不能被模型降低为“正常”。引用 ID 有效不等于模型结论绝对正确，人工仍需核对依据。没有药典或外部医学规则接入。
 
+`audit-risk-v2` 将确定规则与模型推理分开：`inspect_trace_records` 提供当前阶段必需项、尚未到的阶段和排除项。缺失列表由后端检查省市产地、环境登记、建档事件，以及仓储/出库/收货阶段的非空质检文字摘要；仅有空占位事件不满足要求。种植阶段不要求未来采收/加工/质检记录，也不要求未接入的 PDF 存储、土壤水质检测或医学认证。模型不生成 `missingInformation`，对其他文字矛盾/注入疑点在摘要和依据中解释。风险下限校正时，摘要明确说明服务端校正，避免摘要与最终等级相互矛盾。
+
+v2 的 `evidence` 增加可选 `sourceText`，由服务端按本轮固定快照的来源 ID 映射，不允许模型提交或伪造；管理员界面分别展示判断与资料。v1 历史没有该字段时提示对照档案，不改写旧记录。报告仍使用现有 JSON payload，无需 migration；SSE 客户端兼容 v1/v2，发布时等待前后端对应版本完成构建再验收。读取、分析和人工复核核对当前管理员身份，模型等待结束及人工提交前再次读取账号状态/角色/组织；版本 CAS 仍负责批次并发保护，这不是医学判定或权限的实时锁定保证。
+
 建议存放在 `BatchEvent.payload`（`kind=auditRiskAnalysis`），只对管理员可见；人工结论存放在 `BatchAudit`（`source=aiAssisted`），保存模型名与分析快照。无需新增 migration。分析不会改动 `auditStatus/riskLevel`，只记录建议并递增版本；人工复核通过版本条件更新拒绝旧建议和重复提交。
 
 分析整体超时为 55 秒，每用户每分钟最多 5 次，单进程内同批次不能同时分析。上游 401 转为本系统 502，避免前端把 AI Key 配置错误当作登录失效。主要错误码包括 `AI_NOT_CONFIGURED`（503）、`AI_TIMEOUT`（504）、`AI_UPSTREAM_ERROR/AI_INVALID_RESULT`（502）、`AI_ANALYSIS_STALE/AI_ANALYSIS_RUNNING`（409）、`AI_RATE_LIMITED`（429）。
@@ -247,11 +251,17 @@ Agent 使用 `get_batch_snapshot`、`inspect_trace_records` 两个只读工具�
 
 格式参考：[MDN SSE](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events)。
 
+### 手动真实 Agent 评测
+
+在 `server` 目录执行 `npx tsx scripts/evaluate-risk-agent.ts --allow-paid-ai`。它通过实际 Agent 编排调用 DeepSeek，使用合成批次和内存保存替身，不连接业务查询或修改数据库，不随 `npm test` 自动运行。默认覆盖正常种植、缺环境、缺产地、已有高风险、仓储无/有质检、产地矛盾及恶意指令；核对工具、结论、资料来源和内存历史恢复。不是接口落库、浏览器或生产准确率测试。
+
+可用 `--cases complete_planting,conflicting_origin --repeat 2` 重跑指定场景。每轮评测默认最多 32 次模型请求、账号余额差额软上限 0.30 元；`--max-calls` 最多 64，`--max-spend-cny` 最多 1 元，`--repeat` 最多 3。这是脚本上限，不是开发项目的总预算或平台账单硬限制；单次在途请求、余额显示精度/延迟和同期其他调用可能影响差额。Key 只读后端配置，不输出/写入报告；余额查询失败即停止，不自动重试模型请求。余额字段见 [DeepSeek 余额接口](https://api-docs.deepseek.com/api/get-user-balance/)。
+
 ## 单轮 RAG 资料问答
 
 `POST /api/batches/:identifier/questions`：需要登录，请求体严格为 `{ "question": "2～500 字符的问题" }`，返回 `{ reply }`。四角色均使用现有 `BatchService.detail` 的组织/批次范围与事件裁剪，不接收前端批次快照、资料来源或角色。未知或无权访问均返回 404。
 
-- `reply` 含问题、纯文本答案、answered/insufficient 状态、服务端映射的 citations、批次 ID、模型名、知识版本和时间；不修改批次、保存会话或自动审核
+- `reply` 含问题、答案字符串（可使用基础 Markdown）、answered/insufficient 状态、服务端映射的 citations、批次 ID、模型名、知识版本和时间；不修改批次、保存会话或自动审核
 - 在 `src/knowledge/herbs.ts` 人工整理五味药材的 10 个非临床背景摘要（v2 增加黄精），链接到香港浸会大学中药材图像数据库的公开可检索记录；核对日期不是原文发布时间，不是完整药典或全量爬虫
 - 中文双字片段/英文词 + BM25 词法检索与小量扩展，最多 6 个相关片段；没有依据则直接资料不足。Embedding/pgvector 后置，无新 Key、依赖、表或 migration。评分参数参考 [Elasticsearch BM25](https://www.elastic.co/docs/reference/elasticsearch/index-settings/similarity)
 - 批次事实来自权限裁剪后的 detail，排除 AI 审核建议、操作人和完整 payload；当前只查看基础字段及最近 20 条可见事件的有限文字摘要
@@ -294,6 +304,8 @@ Agent 使用 `get_batch_snapshot`、`inspect_trace_records` 两个只读工具�
 - 会话创建/消息发送共享单账号每分钟 30 次限流；没有多实例共享限流、Redis adapter/outbox、必达提示、群聊、附件、在线状态、撤回或客服排班。REST 是恢复记录的依据；前端重连/聚焦补查并对可见页面每 20 秒轮询兜底
 
 ## 普通聊天兼容接口
+
+普通聊天与 RAG 仍要求完整 JSON，并独立校验结构和引用；Markdown 只改变 `answer` 字符串的排版，不放宽 JSON/来源校验。前端使用元素白名单、禁用原始 HTML 和模型链接/图片，真实来源单独展示。聊天仍为非流式完整响应，不能因风险过程 SSE 或前端懒加载声称已实现逐段生成。
 
 - `POST /api/assistant/chat` 请求 `{ question: string }`，去首尾空格后 2～500 字符，严格拒绝额外字段；四角色均需 Bearer 认证。响应 `{ reply: { id, scope: 'general', batchId: null, question, status, answer, citations: [], mode: 'api', modelName, createdAt } }`
 - 只把系统说明与本轮问题交给 DeepSeek，要求 JSON 输出并用 Zod 校验，拒绝工具调用与额外生成字段。没有数据库读工具、检索、历史或医学能力，不冒充批次事实问答；医疗关键词拒答不产生模型费用，其他普通回复无 RAG 来源

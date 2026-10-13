@@ -45,7 +45,7 @@ import {
 export function createApp(
   authService: AuthService = createAuthService(),
   batchService: BatchService = createBatchService(),
-  riskAnalysisService: RiskAnalysisService = createRiskAnalysisService(batchService),
+  riskAnalysisService: RiskAnalysisService = createRiskAnalysisService(batchService, undefined, undefined, authService),
   herbQuestionService: HerbQuestionService = createHerbQuestionService(batchService),
   notificationService: NotificationService = createNotificationService(),
   assistantService: AssistantService = createAssistantService(),

@@ -22,17 +22,19 @@ export function inspectBundle(directory = 'dist') {
   const manifest = JSON.parse(readFileSync(resolve(directory, '.vite/manifest.json'), 'utf8'))
   const login = 'src/pages/login/index.tsx'
   const chart = 'src/components/charts/DashboardChart.tsx'
+  const markdown = 'src/components/assistant/AssistantMarkdown.tsx'
   const buyer = 'src/pages/buyer/herbs/index.tsx'
   const routes = Object.keys(manifest).filter((key) => key.startsWith('src/pages/'))
   assert.equal(routes.length, 19, '19 个页面均应独立成为动态入口；新增页面时同步检查')
   assert.equal(manifest['src/pages/trace/Public.tsx']?.isDynamicEntry, true, '公开溯源页应独立延迟加载')
   routes.forEach((key) => assert.equal(manifest[key].isDynamicEntry, true, `${key} 不应提前导入`))
   assert.equal(manifest[chart]?.isDynamicEntry, true, '图表应独立延迟加载')
+  assert.equal(manifest[markdown]?.isDynamicEntry, true, 'Markdown 应在回答出现时延迟加载')
 
   const entryFiles = collectStaticFiles(manifest, ['index.html'])
   const loginFiles = collectStaticFiles(manifest, ['index.html', login])
   for (const files of [entryFiles, loginFiles]) {
-    for (const key of [...routes.filter((key) => key !== login), chart]) {
+    for (const key of [...routes.filter((key) => key !== login), chart, markdown]) {
       assert.equal(files.includes(manifest[key].file), false, `首屏提前加载了 ${key}`)
     }
     assert.equal(files.includes(manifest[buyer].file), false, '登录页不应加载扫码所在采购商页')

@@ -25,10 +25,12 @@ export function parseRiskResult(value: unknown, batchId: string): RiskAnalysis {
     || !['normal', 'low', 'medium', 'high'].includes(String(value.riskLevel))
     || !['approve', 'manualReview', 'reject'].includes(String(value.recommendation))
     || typeof value.summary !== 'string' || typeof value.modelName !== 'string'
-    || typeof value.createdAt !== 'string' || value.promptVersion !== 'audit-risk-v1'
+    || typeof value.createdAt !== 'string' || !['audit-risk-v1', 'audit-risk-v2'].includes(String(value.promptVersion))
     || !Number.isInteger(value.basedOnVersion) || !Number.isInteger(value.reviewVersion)
     || !strings(value.missingInformation) || !Array.isArray(value.evidence)
-    || !value.evidence.every((item) => record(item) && typeof item.sourceId === 'string' && typeof item.note === 'string')
+    || !value.evidence.every((item) => record(item) && typeof item.sourceId === 'string' && typeof item.note === 'string'
+      && (item.sourceText === undefined ? value.promptVersion === 'audit-risk-v1'
+        : typeof item.sourceText === 'string' && item.sourceText.length <= 600))
     || !Array.isArray(value.toolCalls) || !value.toolCalls.every((item) => record(item)
       && toolNames.includes(String(item.name)) && typeof item.summary === 'string' && typeof item.completedAt === 'string')) {
     throw new ApiError(0, 'STREAM_INVALID', '分析结果格式不正确或批次不匹配')
