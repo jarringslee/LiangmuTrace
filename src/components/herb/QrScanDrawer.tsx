@@ -97,7 +97,13 @@ export default function QrScanDrawer({ open, onClose, onResult }: Props) {
                 <PictureOutlined /> 图片识别
               </span>
             ),
-            children: <ImageScanTab onHit={handleHit} />,
+            children: (
+              <ImageScanTab
+                active={active === 'image' && open}
+                onHit={handleHit}
+              />
+              // 窗口关闭或切到其他标签后，旧图片识别结果不能再触发跳转
+            ),
           },
           {
             key: 'manual',
@@ -124,111 +130,198 @@ function LiveScanTab({ active, onHit }: { active: boolean; onHit: (raw: string) 
 
   const scannerRef = useRef<Html5Qrcode | null>(null)
   const startTokenRef = useRef(0)
+  const activeRef = useRef(false)
+  const onHitRef = useRef(onHit)
+  // 清理时递增当前任务编号，不捕获旧编号或 DOM 节点。
+  const invalidateStart = useCallback(() => ++startTokenRef.current, [])
+
+  // 启动、停止共享一个队列，避免同时操作同一扫码容器。
+  const queueRef = useRef<Promise<void>>(Promise.resolve())
 
   const [cameras, setCameras] = useState<CameraDevice[]>([])
   const [cameraId, setCameraId] = useState<string | undefined>(undefined)
   const [status, setStatus] = useState<LiveStatus>('idle')
   const [errMsg, setErrMsg] = useState<string>('')
 
+  // 保存最新回调，避免父组件的回调变化导致摄像头反复重启。
+  useEffect(() => {
+    onHitRef.current = onHit
+  }, [onHit])
+
+  const enqueue = useCallback((task: () => Promise<void>) => {
+    const run = queueRef.current.then(task, task)
+
+    // 当前任务失败也不能让后续整个队列失效。
+    queueRef.current = run.catch(() => { })
+    return run
+  }, [])
+
   /** 仅停止并清理扫描器；不更新状态（多次调用安全） */
-  const teardown = useCallback(async () => {
+  const clearScanner = useCallback(async () => {
     const inst = scannerRef.current
     scannerRef.current = null
     if (!inst) return
+
     try {
       if (inst.isScanning) {
         await inst.stop()
       }
-      await inst.clear()
+      inst.clear()
     } catch {
-      /** 静默忽略：组件卸载或快速切换时的边界异常不影响 UX */
+      /** 组件卸载或容器移除时，清理可能遇到异常。 */
     }
   }, [])
 
-  /** 用户点击「停止」：清理后将状态置回 idle */
+  // 排队清理：如果 start 尚未完成，等待它结束后再停止。
+  const teardown = useCallback(
+    () => enqueue(clearScanner),
+    [enqueue, clearScanner],
+  )
+
+  /** 用户点击「停止」：先使旧任务失效，再清理实例。 */
   const stop = useCallback(async () => {
+    const token = invalidateStart()
     await teardown()
-    setStatus('idle')
-  }, [teardown])
+
+    if (activeRef.current && token === startTokenRef.current) {
+      setStatus('idle')
+    }
+  }, [teardown, invalidateStart])
 
   const start = useCallback(
     async (targetCameraId?: string) => {
-      const token = ++startTokenRef.current
+      if (!activeRef.current) return
+
+      const token = invalidateStart()
       setStatus('starting')
       setErrMsg('')
 
-      /** 先清掉旧实例 */
-      await teardown()
-      if (token !== startTokenRef.current) return
+      await enqueue(async () => {
+        /** 先清掉旧实例 */
+        await clearScanner()
 
-      const el = document.getElementById(elementId)
-      if (!el) {
-        setStatus('error')
-        setErrMsg('扫码容器未就绪，请稍后重试')
-        return
-      }
+        if (
+          !activeRef.current ||
+          token !== startTokenRef.current
+        ) return
 
-      try {
-        const inst = new Html5Qrcode(elementId, { verbose: false })
-        scannerRef.current = inst
-
-        await inst.start(
-          targetCameraId ? { deviceId: { exact: targetCameraId } } : { facingMode: 'environment' },
-          { fps: 10, qrbox: { width: 240, height: 240 } },
-          (decoded) => {
-            if (token !== startTokenRef.current) return
-            void teardown()
-            onHit(decoded)
-          },
-          () => {
-            /** 每帧解码失败回调，忽略 */
-          },
-        )
-        if (token !== startTokenRef.current) {
-          await teardown()
+        const el = document.getElementById(elementId)
+        if (!el) {
+          setStatus('error')
+          setErrMsg('扫码容器未就绪，请稍后重试')
           return
         }
-        setStatus('scanning')
-      } catch (e) {
-        if (token !== startTokenRef.current) return
-        const msg = (e as Error)?.message ?? String(e)
-        setStatus('error')
-        if (/Permission|NotAllowed/i.test(msg)) {
-          setErrMsg('未获得摄像头权限，请在浏览器中允许使用摄像头，或改用「图片识别 / 手动输入」。')
-        } else if (/NotFound|no.*device/i.test(msg)) {
-          setErrMsg('未检测到可用摄像头，请改用「图片识别 / 手动输入」。')
-        } else {
-          setErrMsg(`摄像头启动失败：${msg}`)
+
+        try {
+          const inst = new Html5Qrcode(elementId, { verbose: false })
+          scannerRef.current = inst
+
+          await inst.start(
+            targetCameraId
+              ? { deviceId: { exact: targetCameraId } }
+              : { facingMode: 'environment' },
+            { fps: 10, qrbox: { width: 240, height: 240 } },
+            (decoded) => {
+              if (
+                !activeRef.current ||
+                token !== startTokenRef.current
+              ) return
+
+              const code = extractTraceCode(decoded)
+              if (!code) return
+
+              // 立即使当前任务失效，避免连续识别导致多次跳转。
+              invalidateStart()
+              void teardown()
+              onHitRef.current(code)
+            },
+            () => {
+              /** 每帧解码失败回调，忽略 */
+            },
+          )
+
+          // 启动完成时可能已经关闭窗口，必须清理刚启动的实例。
+          if (
+            !activeRef.current ||
+            token !== startTokenRef.current
+          ) {
+            await clearScanner()
+            return
+          }
+
+          setStatus('scanning')
+        } catch (e) {
+          await clearScanner()
+
+          if (
+            !activeRef.current ||
+            token !== startTokenRef.current
+          ) return
+
+          const msg = e instanceof Error ? e.message : String(e)
+          setStatus('error')
+
+          if (/Permission|NotAllowed/i.test(msg)) {
+            setErrMsg(
+              '未获得摄像头权限，请在浏览器中允许使用摄像头，或改用「图片识别 / 手动输入」。',
+            )
+          } else if (/NotFound|no.*device/i.test(msg)) {
+            setErrMsg(
+              '未检测到可用摄像头，请改用「图片识别 / 手动输入」。',
+            )
+          } else {
+            setErrMsg(`摄像头启动失败：${msg}`)
+          }
         }
-      }
+      })
     },
-    [elementId, onHit, teardown],
+    [elementId, enqueue, clearScanner, teardown, invalidateStart],
   )
 
   /** 进入/离开 Tab 时启停 */
   useEffect(() => {
+    activeRef.current = active
+
     if (!active) {
+      invalidateStart()
       void teardown()
       return
     }
 
     let cancelled = false
-    ;(async () => {
+    const token = invalidateStart()
+
+    void (async () => {
       try {
         const list = await Html5Qrcode.getCameras()
-        if (cancelled) return
+
+        if (
+          cancelled ||
+          !activeRef.current ||
+          token !== startTokenRef.current
+        ) return
+
         setCameras(list)
+
         const preferred =
-          list.find((c) => /back|rear|environment|后/i.test(c.label))?.id ?? list[list.length - 1]?.id
+          list.find(
+            (camera) => /back|rear|environment|后/i.test(camera.label),
+          )?.id ?? list[list.length - 1]?.id
+
         setCameraId(preferred)
         await start(preferred)
       } catch (e) {
-        if (cancelled) return
-        const msg = (e as Error)?.message ?? String(e)
+        if (
+          cancelled ||
+          !activeRef.current ||
+          token !== startTokenRef.current
+        ) return
+
+        const msg = e instanceof Error ? e.message : String(e)
         setStatus('error')
         setErrMsg(
           /Permission|NotAllowed/i.test(msg)
-            ? '未获得摄像头权限，请在浏览器中允许使用摄像头。'
+            ? '未获得摄像头权限，请改用「图片识别 / 手动输入」。'
             : `无法枚举摄像头：${msg}`,
         )
       }
@@ -236,10 +329,11 @@ function LiveScanTab({ active, onHit }: { active: boolean; onHit: (raw: string) 
 
     return () => {
       cancelled = true
+      activeRef.current = false
+      invalidateStart()
       void teardown()
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active])
+  }, [active, start, teardown, invalidateStart])
 
   /** 切换摄像头 */
   const switchCamera = async (id: string) => {
@@ -332,8 +426,13 @@ function StatusTag({ status }: { status: LiveStatus }) {
 }
 
 /* ------------------------------ 图片识别 ------------------------------- */
-
-function ImageScanTab({ onHit }: { onHit: (raw: string) => void }) {
+function ImageScanTab({
+  active,
+  onHit,
+}: {
+  active: boolean
+  onHit: (raw: string) => void
+}) {
   const uid = useId().replace(/[^a-zA-Z0-9]/g, '')
   const elementId = `qr-file-region-${uid}`
 
@@ -341,37 +440,93 @@ function ImageScanTab({ onHit }: { onHit: (raw: string) => void }) {
   const [loading, setLoading] = useState(false)
   const [errMsg, setErrMsg] = useState<string>('')
 
+  const mountedRef = useRef(false)
+  const activeRef = useRef(false)
+  const fileTokenRef = useRef(0)
+  const busyRef = useRef(false)
+  const invalidateFile = useCallback(() => ++fileTokenRef.current, [])
+
+  useEffect(() => {
+    mountedRef.current = true
+
+    return () => {
+      mountedRef.current = false
+      invalidateFile()
+    }
+  }, [invalidateFile])
+
+  useEffect(() => {
+    activeRef.current = active
+
+    return () => {
+      activeRef.current = false
+      invalidateFile()
+    }
+  }, [active, invalidateFile])
+
+  // 更换图片或卸载组件时，释放上一个预览 URL。
+  useEffect(() => {
+    return () => {
+      if (preview) URL.revokeObjectURL(preview)
+    }
+  }, [preview])
+
   const handleFile = useCallback(
     async (file: RcFile) => {
+      if (!activeRef.current || busyRef.current) return false
+
+      // ref 同步防重；loading 负责界面显示。
+      busyRef.current = true
+      const token = invalidateFile()
+
+      const isCurrent = () =>
+        mountedRef.current &&
+        activeRef.current &&
+        token === fileTokenRef.current
+
       setErrMsg('')
       setLoading(true)
-      const previewUrl = URL.createObjectURL(file)
-      setPreview(previewUrl)
+
       try {
+        const previewUrl = URL.createObjectURL(file)
+        setPreview(previewUrl)
+
         const inst = new Html5Qrcode(elementId, { verbose: false })
+
         try {
           const decoded = await inst.scanFile(file, false)
-          onHit(decoded)
+
+          // 关闭窗口或切换 Tab 后，不使用迟到的识别结果。
+          if (isCurrent()) onHit(decoded)
         } finally {
           try {
-            await inst.clear()
+            inst.clear()
           } catch {
-            /** 忽略清理失败 */
+            /** 忽略容器已移除时的清理异常 */
           }
         }
       } catch (e) {
-        const msg = (e as Error)?.message ?? String(e)
+        if (!isCurrent()) return false
+
+        const msg = e instanceof Error ? e.message : String(e)
+
         if (/No.*QR|not found|unable/i.test(msg)) {
           setErrMsg('未能在该图片中识别到二维码，请尝试更清晰的截图。')
         } else {
           setErrMsg(`识别失败：${msg}`)
         }
       } finally {
-        setLoading(false)
+        busyRef.current = false
+
+        if (mountedRef.current) {
+          setLoading(false)
+        }
       }
+
+      // AntD：不执行真正的文件上传。
       return false
     },
-    [elementId, onHit],
+    [elementId, onHit, invalidateFile],
   )
 
   return (
@@ -385,7 +540,7 @@ function ImageScanTab({ onHit }: { onHit: (raw: string) => void }) {
         maxCount={1}
         showUploadList={false}
         beforeUpload={(file) => handleFile(file as RcFile)}
-        disabled={loading}
+        disabled={loading || !active}
       >
         <p className="ant-upload-drag-icon">
           <PictureOutlined />
