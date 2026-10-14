@@ -169,6 +169,19 @@ npm run prisma:migrate:dev -- --name 迁移名称
 
 MVP 暂不实现 Refresh Token 和服务端登出撤销：客户端退出时删除本地凭证，不会撤销已泄漏的 Token；它仍可能在过期前使用。部署必须使用 HTTPS，JWT 密钥不得传入前端。
 
+## 最小注册与业务账号管理
+
+- `POST /api/auth/register`：无需 JWT，仅接收 `{ username, email, displayName, password, organizationName }`。角色固定 buyer，事务内新建独立采购组织及账号，不允许传 role/status/已有组织 ID；201 返回 `{ account: { id, username, role } }`，不自动签发 Token。注册后按 buyer 登录。
+- `GET /api/accounts`：仅管理员，无查询参数；返回 `{ users, organizations, truncated }`，各最多200条。users 仅 grower/processor/buyer，包含状态与组织名称/启用状态，不含 hash；organizations 只包含启用的三类业务组织，供创建选择。超过限制仅提示，不实现大规模分页管理。
+- `POST /api/accounts`：仅管理员，接收 `{ username, email, displayName, password, role, organizationId }`；role 只允许三类业务角色，事务内核对组织类型及启用状态。管理员身份在 hash 等待后重新检查，201 返回白名单 account。
+- `PATCH /api/accounts/:id/status`：仅管理员，接收 `{ status: 'active' | 'disabled' }`，只更新业务账号。未知或管理员 ID 返回404，不能创建/停用管理员，无 DELETE 接口；状态重复设置仍返回当前账号。
+
+用户名3–30位，字母开头，允许字母/数字/下划线/短横线；邮箱转小写并检查唯一性，密码不 trim、至少8位且UTF-8不超过72字节，使用 bcrypt 12轮 hash。确认密码仅前端校验，不上传；数据库唯一约束继续拦截并发重复，冲突409 `ACCOUNT_EXISTS`，组织不匹配409 `ORGANIZATION_UNAVAILABLE`。注册事务失败不得遗留新组织。
+
+公开注册每连接IP每小时最多5次尝试（失败也计入），超限429 `REGISTRATION_LIMITED`；所有响应 no-store，未验证邮箱、不证明真实机构身份、不提供验证码/找回/改密/组织管理。当前限流为单进程，反向代理真实IP配置仍按部署边界核对，不宣称生产防刷或完整租户系统。
+
+停用使用已有 User.status，不需要新表或 migration，保留历史外键。鉴权每次读取数据库，停用后的旧Token受保护请求被拒绝；已下载内容不会撤回，在途业务也不是全局实时锁。重新启用后，未过期的旧Token可能恢复可用，本实现不做Token版本撤销；Socket连接沿用最多30秒身份复核，其他客户端刷新/下次请求后再反映变化。
+
 ## 匿名公开溯源接口
 
 `GET /api/public/trace/:traceCode` 不要求 JWT，也不因无效 JWT 拒绝公开查询。只接受完整溯源码，无额外查询参数，返回 `{ batch }`；前端 `/public/trace/:traceCode` 只使用白名单字段，完整详情、AI 和实时订阅仍要求登录及权限检查。

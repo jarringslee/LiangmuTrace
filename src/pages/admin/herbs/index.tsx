@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useMemo, useRef, useState } from 'react'
 import {
   App as AntdApp,
   Breadcrumb,
@@ -59,6 +59,7 @@ import { useDispatchRecipients } from '../../../hooks/useDispatchRecipients'
 
 const { Header, Content } = Layout
 const { Text, Title, Paragraph } = Typography
+const AccountManager = lazy(() => import('../../../components/account/AccountManager'))
 
 const STAGE_OPTIONS: { value: Stage | 'all'; label: string }[] = [
   { value: 'all', label: '全部阶段' },
@@ -86,6 +87,7 @@ export default function AdminHerbsPage() {
   } = useHerbBatchMutations()
 
   const [keyword, setKeyword] = useState('')
+  const [accountsOpen, setAccountsOpen] = useState(false)
   const [stage, setStage] = useState<Stage | 'all'>('all')
   const [audit, setAudit] = useState<AuditStatus | 'all'>('all')
 
@@ -405,6 +407,7 @@ export default function AdminHerbsPage() {
             </Title>
           </Space>
           <Space size="large">
+            {authMode === 'api' && <Button onClick={() => setAccountsOpen(true)}>账号管理</Button>}
             <MessageBell />
             <Link to="/dashboard">
               <Space>
@@ -607,6 +610,9 @@ export default function AdminHerbsPage() {
           onClose={() => setRiskBatchId(null)}
         />
       )}
+      {accountsOpen && <Suspense fallback={<Text>正在加载账号管理……</Text>}>
+        <AccountManager onClose={() => setAccountsOpen(false)} />
+      </Suspense>}
     </Layout>
   )
 }

@@ -55,6 +55,9 @@ test('功能提示不再错报聊天室未实现，单轮/持久化历史能力�
     assert.match(prompt, /采购商仅联系平台客服/)
     assert.doesNotMatch(prompt, /人工聊天室尚在开发/)
     assert.match(prompt, /不提供订单\/支付/)
+    assert.match(prompt, /注册会新建独立采购组织/)
+    assert.match(prompt, /不管理其他管理员或删除历史记录/)
+    assert.match(prompt, /改密和找回密码仍未实现/)
   }
   assert.match(prompts[0], /单轮聊天.*没有历史消息/)
   assert.match(prompts[1], /最多4轮相关历史/)

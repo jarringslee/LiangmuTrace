@@ -9,6 +9,8 @@ import { env } from './config/env.js'
 import { healthRouter } from './routes/health.js'
 // 认证模块路由工厂
 import { createAuthRouter } from './routes/auth.js'
+import { createAccountRouter, createBuyerRegistrationRouter } from './routes/accounts.js'
+import { createAccountService, type AccountService } from './services/accounts.js'
 // 认证服务工厂与类型定义
 import { createAuthService, type AuthService } from './services/auth.js'
 // 全局错误处理中间件、自定义HTTP错误类
@@ -53,6 +55,7 @@ export function createApp(
   dashboardService: DashboardService = createDashboardService(),
   chatService: ChatService = createChatService(),
   publicTraceService: PublicTraceService = createPublicTraceService(),
+  accountService: AccountService = createAccountService(undefined, authService),
 ) {
   // 初始化express app实例
   const app = express()
@@ -76,6 +79,8 @@ export function createApp(
   app.use('/api', healthRouter)
   // 挂载鉴权相关接口 /api/auth，注入认证服务
   app.use('/api/auth', createAuthRouter(authService))
+  app.use('/api/auth', createBuyerRegistrationRouter(accountService))
+  app.use('/api/accounts', createAccountRouter(authService, accountService))
   app.use('/api/public/trace', createPublicTraceRouter(publicTraceService))
   app.use('/api/notifications', createNotificationRouter(authService, notificationService))
   app.use('/api/chat', createChatRouter(authService, chatService))

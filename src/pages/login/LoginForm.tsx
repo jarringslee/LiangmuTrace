@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useMemo, useRef, useState } from 'react'
 import { App as AntdApp, Alert, Button, Flex, Form, Input, Segmented, Tabs, Typography } from 'antd'
 import { useAuth } from '../../hooks/useAuth'
 import { loginRoleTabs, type LoginRoleKey } from '../../mock/login/roles'
@@ -6,6 +6,7 @@ import { authMode } from '../../config/api'
 import { ApiError, isAbortError } from '../../services/api'
 
 const { Text } = Typography
+const BuyerRegistration = lazy(() => import('../../components/account/BuyerRegistration'))
 
 export type LoginAccountMode = 'username' | 'email'
 
@@ -19,6 +20,7 @@ export function LoginForm() {
   const { login, message: authMessage } = useAuth()
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [registerOpen, setRegisterOpen] = useState(false)
   const submittingRef = useRef(false)
   const [role, setRole] = useState<LoginRoleKey>('admin')
   const [mode, setMode] = useState<LoginAccountMode>('username')
@@ -55,7 +57,7 @@ export function LoginForm() {
   }
 
   const onForgotPassword = () => {
-    message.info('请联系系统管理员重置密码。内部账号由管理员统一开通与发放。')
+    message.info('暂不提供找回或重置密码，请妥善保存密码；需要时联系平台管理员处理。')
   }
 
   return (
@@ -111,7 +113,7 @@ export function LoginForm() {
         </Form.Item>
 
         <div className="login-page__pwd-hint">
-          <Text type="secondary">{authMode === 'demo' ? '演示账号密码为用户名 + 123' : '请使用管理员分配的账号登录'}</Text>
+          <Text type="secondary">{authMode === 'demo' ? '演示账号密码为用户名 + 123' : role === 'buyer' ? '采购商可自行注册，或使用管理员分配的账号' : '请使用管理员分配的账号登录'}</Text>
         </div>
 
         <Flex justify="flex-end" className="login-page__forgot-row">
@@ -126,6 +128,15 @@ export function LoginForm() {
           </Button>
         </Form.Item>
       </Form>
+      {authMode === 'api' && role === 'buyer' && <Button type="link" disabled={submitting} onClick={() => setRegisterOpen(true)}>注册采购商账号</Button>}
+      {registerOpen && role === 'buyer' && <Suspense fallback={<Text>正在加载注册表单……</Text>}>
+        <BuyerRegistration onClose={() => setRegisterOpen(false)} onRegistered={username => {
+          form.setFieldsValue({ account: username, password: '' })
+          setMode('username')
+          setError(null)
+          setRegisterOpen(false)
+        }} />
+      </Suspense>}
     </div>
   )
 }
