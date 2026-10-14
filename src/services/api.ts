@@ -92,6 +92,7 @@ export async function apiEventStream(
   const timeout = new AbortController()
   const timer = setTimeout(() => timeout.abort(), options.timeoutMs ?? 70_000)
   const signal = options.signal ? AbortSignal.any([options.signal, timeout.signal]) : timeout.signal
+  let streamStarted = false
   const checkIdentity = () => {
     signal.throwIfAborted()
     if (authenticated && token !== getAccessToken()) throw new DOMException('登录身份已变化', 'AbortError')
@@ -118,6 +119,7 @@ export async function apiEventStream(
       await response.body?.cancel().catch(() => undefined)
       throw new ApiError(0, 'STREAM_INVALID', '服务没有返回有效事件流')
     }
+    streamStarted = true
     await readSseMessages(response.body, signal, (message) => {
       // 每帧都检查，切换账号后的旧进度/建议不能进入新账号页面。
       checkIdentity()
@@ -125,10 +127,15 @@ export async function apiEventStream(
     })
   } catch (error) {
     if (options.signal?.aborted || isAbortError(error) && !timeout.signal.aborted) throw error
-    if (timeout.signal.aborted) throw new ApiError(0, 'TIMEOUT', '分析连接超时，请重新查询建议或手动重试')
-    if (error instanceof ApiError) throw error
+    if (timeout.signal.aborted) throw new ApiError(0, 'TIMEOUT', 'AI 连接超时，请重新查询结果或手动重试')
+    if (error instanceof ApiError) {
+      // SSE 已开始时认证错误只能作为 error 帧返回，也要遵循普通 HTTP 的失效处理。
+      if (streamStarted && authenticated && token && token === getAccessToken()
+        && (error.status === 401 || error.status === 403 && ['ACCOUNT_DISABLED', 'ORGANIZATION_DISABLED', 'INVALID_ORGANIZATION'].includes(error.code))) onAuthFailure(error.message)
+      throw error
+    }
     if (error instanceof SseProtocolError) throw new ApiError(0, 'STREAM_INVALID', error.message)
-    throw new ApiError(0, 'NETWORK_ERROR', '分析连接中断，请重新查询建议或手动重试')
+    throw new ApiError(0, 'NETWORK_ERROR', 'AI 连接中断，请重新查询结果或手动重试')
   } finally {
     clearTimeout(timer)
   }

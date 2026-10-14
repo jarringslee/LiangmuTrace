@@ -1,5 +1,6 @@
 import { ApiError } from './api'
 import type { HerbQuestionReply } from '../types/herbQuestion'
+import { isKnowledgeSourceUrl } from './knowledgeSourceUrl'
 
 /** TypeScript 不校验网络 JSON；渲染和打开来源链接前检查实际数据。 */
 export function parseHerbQuestionReply(value: unknown, batchId: string): HerbQuestionReply {
@@ -7,12 +8,7 @@ export function parseHerbQuestionReply(value: unknown, batchId: string): HerbQue
     typeof item === 'string' && item.trim().length > 0 && item.length <= max
   const validUrl = (url: unknown) => {
     if (url === null) return true
-    if (typeof url !== 'string') return false
-    try {
-      const parsed = new URL(url)
-      return parsed.protocol === 'https:' && parsed.hostname === 'sys01.lib.hkbu.edu.hk'
-        && !parsed.username && !parsed.password && parsed.pathname === '/cmed/mmid/detail.php'
-    } catch { return false }
+    return isKnowledgeSourceUrl(url)
   }
   const fail = () => { throw new ApiError(0, 'INVALID_RESPONSE', '问答服务返回格式不正确') }
   if (!value || typeof value !== 'object') return fail()

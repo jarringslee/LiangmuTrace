@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { AuthSession } from '../types/auth'
 import type { AssistantBatch, AssistantContextValue, AssistantHistory, AssistantRequest, AssistantTurn } from '../types/assistant'
 import { authMode } from '../config/api'
-import { getAssistantHistory, sendAssistantMessage } from '../services/assistantDataSource'
+import { getAssistantHistory, streamAssistantMessage } from '../services/assistantDataSource'
 import { assistantSessionKey, isCurrentAssistantSession } from '../services/assistantSession'
 import { isAbortError } from '../services/api'
 import { mergeAssistantTurns } from '../utils/assistant'
@@ -37,7 +37,10 @@ export function useAssistantConversation(session: AuthSession): AssistantContext
     })
     const mutation = useMutation({
         mutationKey: ['assistant-message', session.userId],
-        mutationFn: (run: Run) => sendAssistantMessage(run.id, run, run.controller.signal),
+        mutationFn: (run: Run) => streamAssistantMessage(run.id, run, run.controller.signal, (text) => {
+            if (runRef.current !== run || run.controller.signal.aborted || !isCurrentAssistantSession(session)) return
+            setLocalTurns(items => items.map(item => item.id === run.id ? { ...item, preview: text } : item))
+        }),
         retry: false,
     })
     const serverBusy = history.data?.turns.some((turn) => turn.status === 'pending') ?? false

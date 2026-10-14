@@ -36,7 +36,7 @@ export default function AssistantDrawer() {
                     <div className="assistant-context-summary">
                         {batch
                             ? <Tag closable onClose={removeBatch}>{batch.herbName} · {batch.batchNo}</Tag>
-                            : <Text type="secondary">普通聊天 / 编号查询</Text>}
+                            : <Text type="secondary">药材知识 / 批次查询</Text>}
                         <Button className="assistant-context-toggle" size="small"
                             aria-expanded={contextExpanded} aria-controls={contextId}
                             onClick={() => setContextExpanded((value) => !value)}>
@@ -49,7 +49,7 @@ export default function AssistantDrawer() {
                                 value.startsWith(prefix) ? value : (prefix + value).slice(0, 500))}>插入批次前缀</Button>
                             <Text copyable={{ text: prefix }}>复制前缀</Text>
                             <Text type="secondary">可以普通聊天；批次问题按标签或明确编号查询。</Text>
-                        </Space> : <Text type="secondary">可普通聊天，也可输入完整批次号；详情入口可带入标签。</Text>}
+                        </Space> : <Text type="secondary">可普通聊天或问药材知识；查具体档案可带入标签或输入完整批次号。</Text>}
                     </div>
                 </div>
                 {historyLoading && <Text type="secondary">正在同步聊天记录…</Text>}
@@ -67,7 +67,7 @@ export default function AssistantDrawer() {
                 <div className="assistant-composer">
                     <Input.TextArea aria-label="AI 助手问题" value={draft}
                         onChange={(event) => setDraft(event.target.value)}
-                        placeholder={batch ? '询问这个批次，或直接普通聊天' : '你好，怎么使用溯源系统？'}
+                        placeholder={batch ? '询问这个批次，或输入药材名称了解基础知识' : '例如：山茱萸是什么？怎么查看溯源？'}
                         maxLength={500} showCount autoSize={{ minRows: 2, maxRows: 3 }}
                         onPressEnter={(event) => {
                             // Shift+Enter 换行；中文输入法选词时不能误发送。

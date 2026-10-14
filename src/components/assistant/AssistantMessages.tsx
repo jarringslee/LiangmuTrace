@@ -21,12 +21,17 @@ export default function AssistantMessages({ turns, busy, retry }: {
       <div className="assistant-message assistant-message--reply">
         <Text strong>良木助手</Text>
         {turn.status === 'pending' && <div><Spin size="small" /> 正在回答…</div>}
+        {turn.status === 'pending' && turn.preview && <>
+          <Text type="secondary">生成中，完整回答与依据尚未校验</Text>
+          <Suspense fallback={<Paragraph>{turn.preview}</Paragraph>}>
+            <AssistantMarkdown>{turn.preview}</AssistantMarkdown>
+          </Suspense>
+        </>}
         {turn.reply && <>
           <div><Tag color={turn.reply.mode === 'demo' ? 'gold' : 'green'}>
             {turn.reply.mode === 'demo' ? '本地演示 · 未调用 AI'
-              : turn.reply.scope === 'batch' ? '批次资料问答' : '普通模型回复'}
+              : turn.reply.scope === 'batch' ? '批次资料问答' : turn.reply.scope === 'knowledge' ? `${turn.reply.herbName} · 药材知识` : '良木助手回复'}
           </Tag></div>
-          {turn.reply.status === 'insufficient' && <div><Tag color="gold">资料不足 / 暂无法回答</Tag></div>}
           {/* 加载期间退回转义文本；不把模型正文交给 dangerouslySetInnerHTML。 */}
           <Suspense fallback={<Paragraph>{formatAssistantAnswer(turn.reply)}</Paragraph>}>
             <AssistantMarkdown>{formatAssistantAnswer(turn.reply)}</AssistantMarkdown>

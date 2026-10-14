@@ -23,6 +23,7 @@ const password = process.env.AI_SMOKE_PASSWORD
 assert.ok(password, '请设置 AI_SMOKE_PASSWORD，不将密码写入脚本或报告')
 const api = base.href.replace(/\/$/, '')
 const publicSuite = args.includes('--public-suite')
+const streaming = args.includes('--stream')
 let token
 async function request(path, body) {
   const response = await fetch(api + path, {
@@ -42,10 +43,47 @@ const login = async () => {
   token = result.accessToken // 只留在进程内，不输出、不写文件。
 }
 const cases = []
+async function streamRequest(input) {
+  const response = await fetch(api + '/assistant/conversation/messages/stream', {
+    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(input), signal: AbortSignal.timeout(75_000),
+  })
+  if (!response.ok) {
+    const body = await response.json()
+    throw new Error(`HTTP ${response.status}: ${body.error?.code ?? 'UNKNOWN'}`)
+  }
+  assert.match(response.headers.get('content-type'), /text\/event-stream/)
+  const reader = response.body.getReader(), decoder = new TextDecoder('utf-8', { fatal: true })
+  let buffer = '', count = 0, turn
+  try {
+    while (true) {
+      const part = await reader.read()
+      buffer += decoder.decode(part.value, { stream: !part.done })
+      let end
+      while ((end = buffer.indexOf('\n\n')) !== -1) {
+        const frame = buffer.slice(0, end); buffer = buffer.slice(end + 2)
+        if (frame.startsWith(':')) continue
+        const lines = frame.split('\n'), event = lines.find(line => line.startsWith('event: '))?.slice(7)
+        const raw = lines.find(line => line.startsWith('data: '))?.slice(6)
+        if (!raw) continue
+        const data = JSON.parse(raw)
+        if (event === 'delta') { assert.equal(data.requestId, input.requestId); assert.equal(data.seq, ++count) }
+        else if (event === 'result') turn = data.turn
+        else if (event === 'error') throw new Error(`Stream error: ${data.code}`)
+        else throw new Error('Unknown stream event')
+      }
+      if (part.done) break
+    }
+  } finally { await reader.cancel().catch(() => undefined); reader.releaseLock() }
+  assert.ok(turn, '缺少终态；不自动重跑请求，请先查询历史')
+  if (turn.reply?.modelName) assert.ok(count > 0, '模型回复必须真的有增量正文')
+  console.log(JSON.stringify({ streaming: true, question: input.question, deltaFrames: count }))
+  return { turn }
+}
 async function ask(name, question, batch = null) {
   const input = { requestId: randomUUID(), question, batchIdentifier: batch?.id ?? null }
   const start = Date.now()
-  const { turn } = await request('/assistant/conversation/messages', input)
+  const { turn } = streaming ? await streamRequest(input) : await request('/assistant/conversation/messages', input)
   assert.equal(turn.id, input.requestId)
   assert.equal(turn.question, question)
   assert.equal(turn.status, 'done')
@@ -66,11 +104,15 @@ try {
   if (!publicSuite) {
     const help = await ask('平台能力', '平台客服聊天现在可以使用吗？')
     assert.equal(help.reply.scope, 'general')
-    const general = await ask('普通聊天', '你好，我今天练习 React 的 useEffect。后续回答请围绕这个主题。', gc)
+    const general = await ask('领域边界', 'tcp和udp的区别', gc)
     assert.equal(general.reply.scope, 'general')
-    const recall = await ask('普通多轮', '刚才我在练习什么？', gc)
+    assert.equal(general.reply.status, 'insufficient')
+    assert.equal(general.reply.modelName, null)
+    const help2 = await ask('平台使用', '系统怎么使用？', gc)
+    assert.equal(help2.reply.scope, 'general')
+    const recall = await ask('普通多轮', '详细说一下刚才的使用方式', gc)
     assert.equal(recall.reply.scope, 'general')
-    assert.match(recall.reply.answer, /React|useEffect/i)
+    assert.doesNotMatch(recall.reply.answer, /React|useEffect/i)
     const origin = await ask('甘草事实与背景', '本批次登记产地在哪里？请与资料列举的甘草常见产区区分。', gc)
     assert.equal(origin.reply.scope, 'batch')
     assert.ok(origin.reply.citations.some((source) => source.id === 'batch:origin'))
@@ -83,6 +125,18 @@ try {
   assert.equal(changed.batch.id, hj.id)
   assert.ok(changed.reply.citations.some((source) => source.id === 'batch:origin'))
   assert.doesNotMatch(changed.reply.citations.map((source) => source.title).join(' '), /甘草/)
+  if (streaming) {
+    for (const herbName of ['山茱萸', '铁皮石斛']) {
+      const knowledge = await ask(`${herbName}独立知识`, `${herbName}是什么`, gc)
+      assert.equal(knowledge.reply.scope, 'knowledge')
+      assert.equal(knowledge.reply.herbName, herbName)
+      assert.equal(knowledge.reply.status, 'answered')
+      assert.equal(knowledge.batch, null)
+      assert.ok(knowledge.reply.citations.every(source => source.kind === 'knowledge'))
+    }
+    const refused = await ask('无关命令', '/model', gc)
+    assert.equal(refused.reply.status, 'insufficient'); assert.equal(refused.reply.modelName, null)
+  }
   if (!publicSuite) {
     const followup = await ask('黄精追问', '详细解释刚才的登记产地，哪些是本批次事实，哪些只是通用背景？', hj)
     assert.equal(followup.reply.scope, 'batch')

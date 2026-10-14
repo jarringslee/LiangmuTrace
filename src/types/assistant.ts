@@ -6,7 +6,8 @@ export type AssistantBatch = Pick<HerbBatch, 'id' | 'herbName' | 'batchNo'>
 export type AssistantRequest = { question: string; batch: AssistantBatch | null }
 export type AssistantReply = {
   id: string
-  scope: 'general' | 'batch'
+  scope: 'general' | 'batch' | 'knowledge'
+  herbName?: string
   batchId: string | null
   question: string
   status: 'answered' | 'insufficient'
@@ -24,6 +25,8 @@ export type AssistantTurn = AssistantRequest & {
   status: 'pending' | 'done' | 'error' | 'stopped'
   reply?: AssistantReply
   error?: string
+  // 只在前端保留的未校验预览，不能当作 reply 写入数据库或查询缓存。
+  preview?: string
 }
 
 export type AssistantHistory = {

@@ -79,7 +79,9 @@ test('错误 JSON/枚举/超长/额外字段/工具调用均不能作为普通�
     JSON.stringify({ ...output, answer: '' }), JSON.stringify({ ...output, answer: 'x'.repeat(3_001) }),
     JSON.stringify({ ...output, sourceIds: ['invented'] })]) {
     const service = createAssistantService({ ...mockModel(), complete: async () => ({ content, toolCalls: [] }) })
-    await assert.rejects(service.ask(user, { question: '你好' }), { code: 'AI_INVALID_RESULT' })
+    await assert.rejects(service.ask(user, { question: '你好' }), {
+      code: content === 'bad-json' ? 'AI_RESULT_JSON_INVALID' : 'AI_RESULT_SCHEMA_INVALID',
+    })
   }
   const tools = createAssistantService({ ...mockModel(), complete: async () => ({ content: JSON.stringify(output),
     toolCalls: [{ id: 'fake', type: 'function', function: { name: 'write', arguments: '{}' } }] }) })
@@ -139,6 +141,28 @@ test('DeepSeek 普通请求不强制工具，Agent 与 JSON 请求的既有参�
     assert.equal(bodies[1].tool_choice, 'required')
     assert.deepEqual(bodies[2].response_format, { type: 'json_object' })
     assert.equal('tools' in bodies[2], false)
+  } finally { env.DEEPSEEK_API_KEY = previousKey; globalThis.fetch = previousFetch }
+})
+test('DeepSeek 真流请求保留 JSON 模式，只转发 answer 增量而非原始 JSON/推理', async () => {
+  const { env } = await import('../src/config/env.js')
+  const { deepseekAuditModel } = await import('../src/lib/deepseek.js')
+  const previousKey = env.DEEPSEEK_API_KEY, previousFetch = globalThis.fetch
+  env.DEEPSEEK_API_KEY = 'test-key'
+  const seen: string[] = []
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(String(init!.body))
+    assert.equal(body.stream, true)
+    assert.deepEqual(body.response_format, { type: 'json_object' })
+    assert.equal('tools' in body, false)
+    const parts = ['{"status":"answered","answer":"你好', '，良木药谷。"}']
+    return new Response(parts.map(content => `data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: null }] })}\n\n`).join('')
+      + 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', { headers: { 'Content-Type': 'text/event-stream' } })
+  }
+  try {
+    const result = await deepseekAuditModel.complete({ messages: [{ role: 'user', content: '你好' }], json: true,
+      signal: new AbortController().signal, onAnswer: text => { seen.push(text) } })
+    assert.deepEqual(seen, ['你好', '你好，良木药谷。'])
+    assert.equal(JSON.parse(result.content!).answer, seen.at(-1))
   } finally { env.DEEPSEEK_API_KEY = previousKey; globalThis.fetch = previousFetch }
 })
 

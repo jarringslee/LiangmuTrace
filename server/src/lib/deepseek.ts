@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { env } from '../config/env.js'
 import { HttpError } from '../middleware/error.js'
+import { readModelStream } from './modelStream.js'
 
 export type ToolCall = {
   id: string
@@ -27,6 +28,7 @@ export type ModelRequest = {
   tools?: ToolDefinition[]
   json: boolean
   signal: AbortSignal
+  onAnswer?: (text: string) => void | Promise<void>
 }
 
 export interface AuditModel {
@@ -75,7 +77,7 @@ export const deepseekAuditModel: AuditModel = {
           thinking: { type: 'disabled' },
           temperature: 0.1,
           max_tokens: 2_000,
-          stream: false,
+          stream: Boolean(input.onAnswer),
           ...(input.json ? { response_format: { type: 'json_object' } } : {}),
           // 普通聊天没有工具；仅 Agent 传入工具时才要求工具调用。
           ...(!input.json && input.tools?.length
@@ -97,6 +99,13 @@ export const deepseekAuditModel: AuditModel = {
         'AI_UPSTREAM_ERROR',
         'AI 服务调用失败，请检查服务端配置或稍后重试',
       )
+    }
+    if (input.onAnswer) {
+      if (!response.body || !response.headers.get('content-type')?.includes('text/event-stream')) {
+        await response.body?.cancel().catch(() => undefined)
+        throw new HttpError(502, 'AI_INVALID_RESPONSE', 'AI 服务没有返回有效事件流')
+      }
+      return readModelStream(response.body, input.signal, input.onAnswer)
     }
     let payload: unknown
     try {

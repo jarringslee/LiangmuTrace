@@ -58,7 +58,7 @@ import RiskAnalysisDrawer from '../../../components/herb/RiskAnalysisDrawer'
 import { useDispatchRecipients } from '../../../hooks/useDispatchRecipients'
 
 const { Header, Content } = Layout
-const { Text, Title } = Typography
+const { Text, Title, Paragraph } = Typography
 
 const STAGE_OPTIONS: { value: Stage | 'all'; label: string }[] = [
   { value: 'all', label: '全部阶段' },
@@ -95,6 +95,7 @@ export default function AdminHerbsPage() {
   // 只保存选中 ID，批次内容始终从最新查询结果取得。
   const riskBatch =
     data.find((batch) => batch.id === riskBatchId) ?? null
+  const pendingBatches = data.filter((batch) => batch.auditStatus === 'pending')
 
   const [dispatchBatchId, setDispatchBatchId] =
     useState<string | null>(null)
@@ -335,7 +336,7 @@ export default function AdminHerbsPage() {
             icon={<RobotOutlined />}
             onClick={() => setRiskBatchId(row.id)}
           >
-            AI 审核
+            {row.auditStatus === 'pending' ? 'Agent 审核' : '查看 AI 建议'}
           </Button>
           {row.stage === 'warehousing' ? (
             <Button
@@ -425,6 +426,29 @@ export default function AdminHerbsPage() {
         />
 
         <BatchQueryError error={error} onRetry={reload} />
+
+        <Card className="herb-admin__workbench" variant="borderless" title="Agent 资料审核工作台">
+          <Text>模型调用只读工具核对登记资料、给出风险建议；你查看证据并提交最终结论。</Text>
+          <Flex gap={12} wrap align="center" style={{ marginTop: 12 }}>
+            <Button
+              type="primary"
+              icon={<RobotOutlined />}
+              disabled={loading || !!error}
+              onClick={() => { setKeyword(''); setStage('all'); setAudit('pending') }}
+            >
+              {loading ? '正在读取待审批次' : error ? '待审数据不可用' : `只看待审核（${pendingBatches.length}）`}
+            </Button>
+            {!loading && !error && pendingBatches.slice(0, 3).map((item) => (
+              <Button key={item.id} onClick={() => setRiskBatchId(item.id)}>
+                审核 {item.herbName} · {item.batchNo}
+              </Button>
+            ))}
+          </Flex>
+          <Paragraph type="secondary" style={{ marginTop: 10, marginBottom: 0 }}>
+            {!loading && !error && pendingBatches.length === 0 ? '当前没有待审核批次。' : ''}
+            已审核/已驳回批次只查看已有建议；分析、填入表单都不会自动完成审核。
+          </Paragraph>
+        </Card>
 
         <Card variant="borderless">
           <div className="herb-admin__toolbar">

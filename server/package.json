@@ -8,7 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.seed.json --noEmit && tsc -p tsconfig.test.json --noEmit",
-    "test": "tsx --test tests/auth.test.ts tests/batches.test.ts tests/riskAnalysis.test.ts tests/herbQuestion.test.ts tests/notifications.test.ts tests/assistant.test.ts tests/assistantConversation.test.ts tests/dashboard.test.ts tests/chat.test.ts tests/publicTrace.test.ts tests/config.test.ts",
+    "test": "tsx --test tests/auth.test.ts tests/batches.test.ts tests/riskAnalysis.test.ts tests/herbQuestion.test.ts tests/modelStream.test.ts tests/notifications.test.ts tests/assistant.test.ts tests/assistantConversation.test.ts tests/dashboard.test.ts tests/chat.test.ts tests/publicTrace.test.ts tests/config.test.ts",
     "prisma:validate": "prisma validate",
     "prisma:generate": "prisma generate",
     "prisma:migrate:dev": "prisma migrate dev",

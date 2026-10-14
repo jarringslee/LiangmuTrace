@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { after, before, beforeEach, test } from 'node:test'
 import { createElement } from 'react'
 import { renderToString } from 'react-dom/server'
 import { createServer } from 'vite'
 
-let vite, Drawer, fixture
+let vite, Drawer, fixture, workbench
 const batch = { id: 'batch-test', batchNo: 'YM-TEST', herbName: '甘草', auditStatus: 'pending' }
 const reviewInput = { decision: 'approved', riskLevel: 'low', reason: '人工核对完成' }
 const analysis = () => ({
@@ -38,8 +39,10 @@ before(async () => {
           const box = ({ children }) => createElement('div', null, children)
           export const Alert = ({ title, description, children }) => createElement('div', null, title, description, children)
           export const Divider = box, Empty = box, Select = box, Space = box,
-            Spin = box, Tag = box, Timeline = box
-          export const RobotOutlined = () => null, RiskTag = () => null
+            Spin = box, Tag = box
+          export const Timeline = ({ items }) => createElement('div', null,
+            items.map((item) => createElement('div', { key: item.key }, item.content)))
+          export const RobotOutlined = () => null, RiskTag = () => null, AuditTag = () => null, StageTag = () => null
           export const Typography = { Text: box, Title: box, Paragraph: box }
           export const Input = { TextArea: box }
           export const App = { useApp: () => ({
@@ -69,6 +72,7 @@ before(async () => {
   })
   fixture = (await vite.ssrLoadModule('virtual:risk-drawer')).fixture
   Drawer = (await vite.ssrLoadModule('/src/components/herb/RiskAnalysisDrawer.tsx')).default
+  workbench = await vite.ssrLoadModule('/src/utils/riskWorkbench.ts')
 })
 after(async () => { await vite?.close() })
 beforeEach(() => {
@@ -182,4 +186,76 @@ test('v2 区分模型判断与服务端资料并按文本转义，v1 不伪造�
   fixture.hook.query.data = { ...analysis(), promptVersion: 'audit-risk-v1',
     evidence: [{ sourceId: 'batch:origin', note: '旧模型判断' }] }
   assert.match(renderDrawer(), /旧建议未保存原文快照/)
+})
+
+test('已审核与已驳回明确解释只读原因，不允许事件回调绕过禁用分析', async () => {
+  fixture.hook.startAnalyze = async () => fixture.calls.push(['analyze'])
+  for (const auditStatus of ['approved', 'rejected']) {
+    const html = renderDrawer({ ...batch, auditStatus })
+    assert.match(html, /Agent 只分析待审核批次/)
+    assert.equal(button('重新分析').disabled, true)
+    await button('重新分析').onClick()
+    assert.deepEqual(fixture.calls, [])
+  }
+})
+
+test('首次读取、后台读取、离线暂停和读取失败都阻止重复付费分析', async () => {
+  fixture.hook.startAnalyze = async () => fixture.calls.push(['analyze'])
+  for (const state of [
+    { isPending: true }, { isFetching: true }, { isPaused: true }, { isSuccess: false, error: new Error('读取失败') },
+  ]) {
+    fixture.hook.query = { data: analysis(), isSuccess: true, isFetching: false, isPending: false, isPaused: false, ...state }
+    const html = renderDrawer()
+    assert.equal(button('重新分析').disabled, true)
+    assert.match(html, /正在读取|读取已暂停|尚未成功读取/)
+    await button('重新分析').onClick()
+    assert.deepEqual(fixture.calls, [])
+  }
+})
+
+test('待审无报告可分析但不能人工提交；待审过期报告可以重分析但不能继续提交', () => {
+  const state = { auditStatus: 'pending', analysis: null, analyzing: false, reviewing: false,
+    reading: false, readSuccess: true, readPaused: false }
+  assert.equal(workbench.getRiskWorkbenchState(state).canAnalyze, true)
+  assert.equal(workbench.getRiskWorkbenchState(state).canReview, false)
+  assert.match(workbench.getRiskWorkbenchState(state).reviewReason, /先运行分析/)
+  const stale = workbench.getRiskWorkbenchState({ ...state, analysis: { ...analysis(), stale: true } })
+  assert.equal(stale.canAnalyze, true)
+  assert.equal(stale.canReview, false)
+  assert.match(stale.reviewReason, /版本已变化/)
+})
+
+test('依据名称与工具显示使用友好文字，未改写服务端来源与阶段事件', () => {
+  assert.equal(workbench.riskEvidenceLabel('batch:origin'), '登记产地')
+  assert.equal(workbench.riskEvidenceLabel('event:abc'), '溯源记录')
+  assert.equal(workbench.riskEvidenceLabel('legacy:abc'), '资料来源')
+  assert.equal(workbench.riskProgressLabel({ toolName: 'get_batch_snapshot', status: 'completed' }), '已完成：读取所选批次快照')
+  assert.equal(workbench.riskProgressLabel({ message: '建议已保存', status: 'completed' }), '建议已保存')
+  fixture.hook.query.data = { ...analysis(), promptVersion: 'audit-risk-v2', evidence: [
+    { sourceId: 'batch:origin', note: '产地文字需核对', sourceText: '甘肃省定西市' },
+  ] }
+  const html = renderDrawer()
+  assert.match(html, /判断与资料对照/)
+  assert.match(html, /登记产地/)
+  assert.match(html, /技术来源标识/)
+  assert.match(html, /填入建议只预填表单/)
+  assert.match(html, /当前阶段必需项均已登记/)
+})
+
+test('真实阶段与工具使用单栏内容，报告保存后过程收起；代码样式不继承暗色文字', async () => {
+  fixture.hook.progress = [{ seq: 1, stage: 'tool', status: 'completed', toolName: 'get_batch_snapshot', message: '已完成工具' }]
+  fixture.hook.query.data = { ...analysis(), toolCalls: [
+    { name: 'inspect_trace_records', summary: '检查当前登记资料', completedAt: '2026-10-14T00:00:00Z' },
+  ] }
+  const html = renderDrawer()
+  assert.match(html, /已完成：读取所选批次快照/)
+  assert.match(html, /检查当前阶段资料并整理依据/)
+  assert.match(html, /<details class="risk-workbench__process">/)
+  fixture.hook.analyze.isPending = true
+  assert.match(renderDrawer(), /<details class="risk-workbench__process" open="">/)
+  const less = (await import('less')).default
+  const css = (await less.render(readFileSync('src/components/herb/riskAnalysis.less', 'utf8'))).css
+  assert.match(css, /\.risk-workbench \.ant-typography code/)
+  assert.match(css, /color: #244b36/)
+  assert.match(css, /overflow-wrap: anywhere/)
 })

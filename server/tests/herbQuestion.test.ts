@@ -62,6 +62,14 @@ test('知识分块具有真实来源链接，只检索当前药材，未知药�
   assert.ok(sources.every((source) => new URL(source.url!).hostname === 'sys01.lib.hkbu.edu.hk'))
   assert.deepEqual(retrieveQuestionSources('量子纠缠发动机', '丹参', []), [])
 })
+test('当前十五味演示药材与铁皮石斛均有独立基础资料，植物分布不是批次产地', () => {
+  for (const name of ['黄芪','当归','甘草','黄连','杜仲','山茱萸','柴胡','丹参','板蓝根','党参','连翘','五味子','天麻','苍术','黄精','铁皮石斛']) {
+    const sources = retrieveQuestionSources(`${name}是什么`, name, [])
+    assert.ok(sources.length, name)
+    assert.ok(sources.every(source => source.kind === 'knowledge' && source.title.includes(name)), name)
+    assert.ok(sources.every(source => source.url?.startsWith('https://')))
+  }
+})
 
 test('小型词法召回评测：五味药材背景/批次事实/无依据，补齐黄精官方摘要', () => {
   for (const herbName of ['甘草', '黄精', '丹参', '黄芪', '当归']) {
@@ -134,7 +142,7 @@ test('问答只调用一次模型，返回服务端映射的引用与知识版�
   assert.equal(result.batchId, batch.id)
   assert.equal(result.mode, 'api')
   assert.equal(result.retrieval, 'bm25')
-  assert.equal(result.knowledgeVersion, 'herb-knowledge-v2')
+  assert.equal(result.knowledgeVersion, 'herb-knowledge-v3')
   assert.ok(result.citations.length)
   assert.equal(result.citations[0].id, 'batch:origin')
   assert.equal(result.citations[0].url, null)
@@ -173,10 +181,12 @@ test('结构错误、伪造引用、未在正文出现的引用和未提供引�
     { status: 'wrong', answer: '枚举错误', sourceIds: [] },
   ]) {
     const { service } = setup(mockModel(output))
-    await assert.rejects(service.ask(buyer, 'batch-test', { question: '本批次登记产地？' }), { code: 'AI_INVALID_RESULT' })
+    await assert.rejects(service.ask(buyer, 'batch-test', { question: '本批次登记产地？' }), {
+      code: output.status === 'wrong' ? 'AI_RESULT_SCHEMA_INVALID' : 'AI_RESULT_CITATIONS_INVALID',
+    })
   }
   const { service } = setup({ ...mockModel(), complete: async () => ({ content: 'bad-json', toolCalls: [] }) })
-  await assert.rejects(service.ask(buyer, 'batch-test', { question: '本批次登记产地？' }), { code: 'AI_INVALID_RESULT' })
+  await assert.rejects(service.ask(buyer, 'batch-test', { question: '本批次登记产地？' }), { code: 'AI_RESULT_JSON_INVALID' })
 })
 
 test('医疗问题和没有检索依据的问题直接拒答，不产生模型费用；仍先检查访问权限', async () => {

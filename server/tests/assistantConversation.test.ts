@@ -186,12 +186,15 @@ test('同批次追问传真实历史但重新检索；不同批次/新版本不�
   await h.service.send(user, input('登记产地在哪里？', 'A'))
   assert.equal(h.requests.at(-1)!.length, 2)
 })
-test('无标签批次问题/提到其他药材先澄清，不借用旧标签生成答案', async () => {
+test('无标签批次事实先澄清；药材知识不借用旧标签，编号与药名矛盾仍澄清', async () => {
   const h = setup()
   assert.match((await h.service.send(user, input('产地在哪里？'))).reply!.answer, /提供完整批次号/)
-  assert.match((await h.service.send(user, input('介绍黄精', 'A'))).reply!.answer, /切换对应批次/)
+  const knowledge = await h.service.send(user, input('介绍黄精', 'A'))
+  assert.equal(knowledge.reply!.scope, 'knowledge')
+  assert.equal(knowledge.batch, null)
+  assert.ok(knowledge.reply!.citations.every(source => source.kind === 'knowledge'))
   assert.match((await h.service.send(user, input('YM-A 的黄精是什么'))).reply!.answer, /切换对应批次/)
-  assert.equal(h.requests.length, 0)
+  assert.equal(h.requests.length, 1)
 })
 test('权限撤销、组织/角色变化或批次删除，历史问题/回答/来源/标签全部隐藏', async () => {
   for (const change of ['permission', 'organization', 'role', 'deleted']) {
@@ -337,4 +340,94 @@ test('新会话 HTTP 断开取消模型并持久化 stopped，不保存迟到成
     assert.equal(h.users.get(user.id)![0].status, 'stopped')
     assert.equal(h.users.get(user.id)![0].reply, null)
   } finally { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())) }
+})
+
+test('无关技术/命令是正常拒答，不调用模型；旧 React 历史不影响问候', async () => {
+  const h = setup()
+  for (const question of ['tcp和udp的区别', '/model', 'React useEffect 是什么']) {
+    const result = await h.service.send(user, input(question, 'A'))
+    assert.equal(result.status, 'done')
+    assert.equal(result.reply!.status, 'insufficient')
+    assert.match(result.reply!.answer, /很抱歉.*中药材/)
+  }
+  assert.equal(h.requests.length, 0)
+  const old = h.users.get(user.id)![0]
+  old.question = 'React 是什么'
+  old.reply = { scope: 'general', answer: '继续聊 React', status: 'answered', citations: [] }
+  await h.service.send(user, input('hi'))
+  assert.equal(h.requests.at(-1)!.length, 2)
+  assert.equal(h.users.get(user.id)!.length, 4) // 历史没有被删除。
+})
+test('独立知识只使用同药材历史，切药材不借用别的知识或批次来源', async () => {
+  const h = setup()
+  const first = await h.service.send(user, input('甘草是什么'))
+  assert.equal(first.reply!.scope, 'knowledge'); assert.equal(first.batch, null)
+  await h.service.send(user, input('详细说一下'))
+  assert.equal(h.requests.at(-1)!.length, 4)
+  await h.service.send(user, input('黄精是什么'))
+  assert.equal(h.requests.at(-1)!.length, 2)
+  assert.equal(h.lookups.length, 0)
+})
+test('山茱萸无批次与铁皮石斛带错药标签均走独立知识，不读取无关批次', async () => {
+  const h = setup()
+  for (const [question, identifier, name] of [['山茱萸是什么', null, '山茱萸'], ['铁皮石斛是什么', 'A', '铁皮石斛']]) {
+    const result = await h.service.send(user, input(question!, identifier))
+    assert.equal(result.reply!.scope, 'knowledge')
+    assert.equal(result.reply!.herbName, name)
+    assert.equal(result.batch, null)
+    assert.ok(result.reply!.citations.every(source => source.kind === 'knowledge'))
+  }
+  assert.equal(h.lookups.length, 0)
+})
+test('知识问答之后的平台帮助含“详细”或“审核”也不能继承旧药材上下文', async () => {
+  const h = setup()
+  await h.service.send(user, input('山茱萸是什么'))
+  for (const question of ['系统怎么使用？请详细说明角色、AI问答和通知区别。', '平台的审核功能怎么使用？']) {
+    const result = await h.service.send(user, input(question))
+    assert.equal(result.reply!.scope, 'general')
+    assert.equal(h.requests.at(-1)!.at(-1)!.content, question)
+    assert.ok(!h.requests.at(-1)!.some(message => message.content?.includes('本轮依据')))
+  }
+})
+test('每个生成帧先复核身份；撤权后不发送正文或保存成功结果', async () => {
+  const h = setup(), updates: string[] = []
+  const service = createAssistantConversationService({ ...h.options, model: { ...h.options.model, async complete(request) {
+    await request.onAnswer?.('允许的第一段')
+    h.actors.set(user.id, { ...user, role: 'admin' })
+    await request.onAnswer?.('不应泄露的第二段')
+    return h.options.model.complete(request)
+  } } })
+  await assert.rejects(service.send(user, input('本批次登记产地', 'A'), undefined, text => { updates.push(text) }), { code: 'FORBIDDEN' })
+  assert.deepEqual(updates, ['允许的第一段'])
+  assert.equal(h.users.get(user.id)![0].status, 'error')
+  assert.equal(h.users.get(user.id)![0].reply, null)
+})
+test('HTTP 真实问答 SSE 在模型结束前推正文，校验落库后才有 result；错误不伪装完成', async () => {
+  const h = setup(), app = express()
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const service = createAssistantConversationService({ ...h.options, model: { ...h.options.model, async complete(request) {
+    await request.onAnswer?.('正在生成的正文')
+    await gate
+    return h.options.model.complete(request)
+  } } })
+  app.use(express.json()); app.use('/api/assistant', createAssistantRouter({ ...h.options.auth, login: async () => user }, createAssistantService(h.options.model), service)); app.use(errorHandler)
+  const server = app.listen(0, '127.0.0.1'); await once(server, 'listening')
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/assistant/conversation/messages/stream`
+  const headers = { Authorization: `Bearer ${await signAccessToken(user.id)}`, 'Content-Type': 'application/json' }
+  try {
+    const request = input('你好')
+    const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(request) })
+    assert.match(response.headers.get('content-type')!, /text\/event-stream/)
+    const reader = response.body!.getReader(), decoder = new TextDecoder()
+    const first = decoder.decode((await reader.read()).value)
+    assert.match(first, /event: delta/); assert.doesNotMatch(first, /event: result/)
+    assert.equal(h.users.get(user.id)![0].status, 'pending')
+    release()
+    let rest = ''
+    while (true) { const part = await reader.read(); if (part.done) break; rest += decoder.decode(part.value, { stream: true }) }
+    assert.match(rest, /event: result/)
+    assert.equal(h.users.get(user.id)![0].status, 'done')
+    assert.equal((await fetch(url, { method: 'POST', headers, body: JSON.stringify({ ...input(), messages: [] }) })).status, 400)
+  } finally { release(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
 })

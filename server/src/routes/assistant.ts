@@ -44,6 +44,41 @@ export function createAssistantRouter(auth: AuthService, service: AssistantServi
       res.off('close', disconnected)
     }
   })
+  router.post('/conversation/messages/stream', limiter, async (req, res, next) => {
+    const input = conversationMessageSchema.parse(req.body)
+    if (!conversations) throw new HttpError(503, 'ASSISTANT_STORAGE_NOT_READY', '会话服务尚未接入')
+    const controller = new AbortController()
+    const disconnected = () => { if (!res.writableEnded) controller.abort() }
+    req.once('aborted', disconnected); res.once('close', disconnected)
+    let heartbeat: ReturnType<typeof setInterval> | undefined, seq = 0
+    const send = (event: string, data: unknown) => {
+      controller.signal.throwIfAborted()
+      if (res.destroyed) { controller.abort(); controller.signal.throwIfAborted() }
+      if (!res.headersSent) {
+        res.status(200).set({ 'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-store, no-transform', 'X-Accel-Buffering': 'no' })
+        res.flushHeaders()
+        heartbeat = setInterval(() => { if (!res.destroyed && !res.writableEnded) res.write(': keep-alive\n\n') }, 10_000)
+        heartbeat.unref()
+      }
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+    }
+    try {
+      const turn = await conversations.send(req.auth!, input, controller.signal, text => {
+        send('delta', { requestId: input.requestId, seq: ++seq, text })
+      })
+      // 只有完整校验及落库后的 turn 才是成功终态；规则拒答可直接返回 result。
+      send('result', { turn }); res.end()
+    } catch (error) {
+      if (controller.signal.aborted || res.destroyed) return
+      if (!res.headersSent) { try { storageError(error) } catch (safe) { next(safe) }; return }
+      const safe = error instanceof HttpError ? error : new HttpError(500, 'INTERNAL_ERROR', '问答服务暂时不可用，请手动重试')
+      send('error', { status: safe.status, code: safe.code, message: safe.message }); res.end()
+    } finally {
+      if (heartbeat) clearInterval(heartbeat)
+      req.off('aborted', disconnected); res.off('close', disconnected)
+    }
+  })
   router.post('/chat', limiter, async (req, res) => {
     const input = assistantQuestionSchema.parse(req.body)
     const controller = new AbortController()

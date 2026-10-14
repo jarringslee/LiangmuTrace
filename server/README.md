@@ -251,6 +251,12 @@ v2 的 `evidence` 增加可选 `sourceText`，由服务端按本轮固定快照�
 
 格式参考：[MDN SSE](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events)。
 
+### 本机审核演示资料
+
+在 `server` 执行 `npx tsx scripts/prepare-risk-demo.ts` 只打印三类计划，不查询/写库或调用模型。显式增加 `--write-local` 才在非生产、本机 `localhost/127.0.0.1/::1:5432` 的 `liangmu_medicine` 库新增固定编号 `YM-2026-DEMO-37-1/2/3`：资料完整、缺环境、产地矛盾。使用现有启用的 `yuanyuhang` 种植账号及其组织；全部标注合成资料，初始为种植中/待审，不代表真实药材。
+
+脚本不是正式 seed，不连 Neon；编号归属冲突则事务回滚，重复执行仅跳过已存在记录，不覆盖用户后续审核或恢复初始值。不会发业务通知、提交审核或调用 AI，因此不能把它当作建档接口/通知验收。真实分析由管理员登录后在工作台手动触发；打开已保存报告仅 GET，不重复付费。演示资料保留在本机，不随代码提交自动进入公网库。
+
 ### 手动真实 Agent 评测
 
 在 `server` 目录执行 `npx tsx scripts/evaluate-risk-agent.ts --allow-paid-ai`。它通过实际 Agent 编排调用 DeepSeek，使用合成批次和内存保存替身，不连接业务查询或修改数据库，不随 `npm test` 自动运行。默认覆盖正常种植、缺环境、缺产地、已有高风险、仓储无/有质检、产地矛盾及恶意指令；核对工具、结论、资料来源和内存历史恢复。不是接口落库、浏览器或生产准确率测试。
@@ -262,7 +268,7 @@ v2 的 `evidence` 增加可选 `sourceText`，由服务端按本轮固定快照�
 `POST /api/batches/:identifier/questions`：需要登录，请求体严格为 `{ "question": "2～500 字符的问题" }`，返回 `{ reply }`。四角色均使用现有 `BatchService.detail` 的组织/批次范围与事件裁剪，不接收前端批次快照、资料来源或角色。未知或无权访问均返回 404。
 
 - `reply` 含问题、答案字符串（可使用基础 Markdown）、answered/insufficient 状态、服务端映射的 citations、批次 ID、模型名、知识版本和时间；不修改批次、保存会话或自动审核
-- 在 `src/knowledge/herbs.ts` 人工整理五味药材的 10 个非临床背景摘要（v2 增加黄精），链接到香港浸会大学中药材图像数据库的公开可检索记录；核对日期不是原文发布时间，不是完整药典或全量爬虫
+- 在 `src/knowledge/herbs.ts` 人工整理 16 味药材相关的 34 个非临床片段（当前展示的 15 味及铁皮石斛，v3）；来源为 HKBU 药材记录摘要与中科院植物智公开植物资料。来源植物分布、商品药材常见产区和批次登记产地分别解释；板蓝根/柴胡的植物资料不宣称完成药典基原鉴定。核对日期不是原文发布时间，不是完整药典、全量爬虫或医学判断
 - 中文双字片段/英文词 + BM25 词法检索与小量扩展，最多 6 个相关片段；没有依据则直接资料不足。Embedding/pgvector 后置，无新 Key、依赖、表或 migration。评分参数参考 [Elasticsearch BM25](https://www.elastic.co/docs/reference/elasticsearch/index-settings/similarity)
 - 批次事实来自权限裁剪后的 detail，排除 AI 审核建议、操作人和完整 payload；当前只查看基础字段及最近 20 条可见事件的有限文字摘要
 - 当前阶段、审核状态、风险标记与事件类型转换为中文展示词，数据库/API 枚举不变；sold 仍表示已收货，不是支付完成。模型输入与来源标题使用展示词，而非这些内部枚举
@@ -305,7 +311,7 @@ v2 的 `evidence` 增加可选 `sourceText`，由服务端按本轮固定快照�
 
 ## 普通聊天兼容接口
 
-普通聊天与 RAG 仍要求完整 JSON，并独立校验结构和引用；Markdown 只改变 `answer` 字符串的排版，不放宽 JSON/来源校验。前端使用元素白名单、禁用原始 HTML 和模型链接/图片，真实来源单独展示。聊天仍为非流式完整响应，不能因风险过程 SSE 或前端懒加载声称已实现逐段生成。
+普通聊天与 RAG 最终仍要求完整 JSON，并独立校验结构和引用；Markdown 只改变 `answer` 字符串的排版，不放宽校验。前端使用元素白名单、禁用原始 HTML 和模型链接/图片，真实来源单独展示。会话流式接口从 DeepSeek `stream:true` 接收正文增量，解码 JSON 的 `answer` 字符串并隐藏未校验的引用 ID；首段立即发，后续合并约24字再发，降低逐token身份/权限复核的数据库开销，不设置打字机延时，不输出推理链。
 
 - `POST /api/assistant/chat` 请求 `{ question: string }`，去首尾空格后 2～500 字符，严格拒绝额外字段；四角色均需 Bearer 认证。响应 `{ reply: { id, scope: 'general', batchId: null, question, status, answer, citations: [], mode: 'api', modelName, createdAt } }`
 - 只把系统说明与本轮问题交给 DeepSeek，要求 JSON 输出并用 Zod 校验，拒绝工具调用与额外生成字段。没有数据库读工具、检索、历史或医学能力，不冒充批次事实问答；医疗关键词拒答不产生模型费用，其他普通回复无 RAG 来源
@@ -318,13 +324,16 @@ v2 的 `evidence` 增加可选 `sourceText`，由服务端按本轮固定快照�
 
 - `GET /api/assistant/conversation` 不接受查询字段，账号从 JWT/数据库身份派生，返回 `{ conversationId, mode: 'api', turns }`；按 sequence 返回最近 40 轮，每轮含 id（请求 UUID）、question、batch 标签、status、createdAt，完成轮带 reply，失败轮带安全 error。
 - `POST /api/assistant/conversation/messages` 严格接收 `{ requestId: UUID, question: string, batchIdentifier?: string | null }`，返回 `{ turn }`；不接收客户端历史、角色、组织或检索资料。新端点与旧 `/chat` 共用每用户每分钟 10 次的内存限流，历史读取不调用模型；旧批次问答另计数。
+- `POST /api/assistant/conversation/messages/stream` 使用相同输入、认证、UUID/租约及限流。SSE `delta` 为 `{ requestId, seq, text }`，text 是当前增量解码的正文快照，序号递增；`result` 为完整校验及保存后的 `{ turn }`，`error` 为安全错误。规则拒答或 UUID 重放可只有 result；每个正文帧前复核身份及批次权限/版本。前端预览只存临时 state，不写数据库或 Query 正式历史；失流先 GET 确认结果，不自动改用非流式接口重复计费。前后端须对应发布，旧 JSON 端点保留兼容。
 - 新增 AssistantConversation（userId 唯一）与 AssistantTurn（会话/请求 UUID、会话/sequence 唯一）模型。事务通过 version 条件更新占用 65 秒租约；finish 同时核对账号、版本、请求与租约，旧结果不能覆盖后来请求。同请求返回已有记录，重用 UUID 改问题返回 409；失败/取消留痕，不自动再次执行模型。过期 pending 显示 stopped，下次新请求接管时标记中断。
 - 新端点服务端最多取 4 轮/8 条相关历史，问题最多 500 字符，历史回答截取 1000 字符；普通聊天只取普通历史，批次追问只取同批次、同 version、同角色/组织记录。短追问用上一问补词法主题，事实与引用始终来自本轮按权限读取的 sources，旧回答不当知识库或事实。
 - 普通问候/系统使用问题不强制 RAG；普通“刚才……”追问可沿用最近成功普通会话。包含“平台/系统”的批次事实仍走资料问答，平台客服/功能/入口帮助则走普通交流。问题中的 YM 批次号/溯源码优先于标签，经 detail 同一权限检查。多个编号、无编号或药材不匹配先澄清。规则分流不是通用意图识别；不做跨批次对比、模型写入工具或向量检索。
 - 普通聊天提示词说明实际平台能力：人工聊天与业务通知分开，采购商仅平台客服，内部按协作关系联系，不提供订单/支付或任意角色互聊。兼容单轮与持久化会话分别说明历史边界；平台帮助不是实时数据库查询。
+- 新会话 reply.scope 增加 `knowledge`，带 `herbName`、`batchId:null` 和经映射的知识引用；该分支不读取批次，明确药材名可覆盖旧标签的知识主题，但完整 YM 编号仍用于授权查询批次。知识追问仅使用同药材历史；平台帮助不能因“详细”继承旧药材，旧 React/无关内容不进入新上下文。词法规则仍可能误判，医疗关键词（包括否定句中的词）会触发保守拒答，不声称语义意图识别。
 - 历史助手输出按当前 JSON 协议序列化，避免多轮模型仿照旧格式输出空白/缺字段；历史作为不可信对话，RAG 本轮引用只认可本轮 sources。召回前剔除定位编号/插入前缀，知识命中后补最小批次身份；“来源”与产地使用词法别名，不以通用产区替代具体批次产地。
 - 读取/重放历史再次核对角色/组织和批次权限，删除/不可访问批次的原问题、答案、标签及来源全部隐藏。新会话 reply 只包含引用标题/发布者/链接，不包含检索 excerpt；生成期间身份/版本变化不能保存成功答案。医疗边界与注入隔离仍是 MVP 防护，不宣称完全安全。
 - 新增错误：ASSISTANT_STORAGE_NOT_READY（503）、AI_REQUEST_CONFLICT/AI_REQUEST_STALE（409）；旧运行/版本冲突、取消/超时错误沿用。退出不删除数据库消息；历史撤权在重新读取时生效，不提供实时擦除已经显示的消息。旧兼容接口并发保护仍为单进程，限流没有共享 Redis。
+- 生成诊断细分 `AI_RESULT_JSON_INVALID`、`AI_RESULT_SCHEMA_INVALID`、`AI_RESULT_CITATIONS_INVALID`（502），引用失败说明未提供来源/正文与列表不符/缺依据等原因，不保存未经校验的原始正文。模型仍可能输出无效结果；不能把失败自动转成成功，也不声称结构校验能证明医学事实正确。
 
 ### 手动真实 AI 烟测
 
@@ -335,6 +344,7 @@ v2 的 `evidence` 增加可选 `sourceText`，由服务端按本轮固定快照�
 ```powershell
 $env:AI_SMOKE_PASSWORD = '你的演示账号密码'
 node scripts/check-assistant-demo.mjs --allow-paid-ai --account chenjingxuan
+node scripts/check-assistant-demo.mjs --allow-paid-ai --stream --public-suite --account chenjingxuan
 Remove-Item Env:AI_SMOKE_PASSWORD
 ```
 

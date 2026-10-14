@@ -84,6 +84,77 @@ test('普通聊天失败不自动重试或清除登录，切账号的迟到回�
   await assert.rejects(source.askAssistant({ question: '你好', batch: null }, new AbortController().signal), { name: 'AbortError' })
 })
 
+test('真实回答流使用 Bearer/UUID，增量先到达；仅校验后的终态构建 reply', async () => {
+  const previews = []
+  const final = { id: 'stream-request', question: '你好', batch: null, status: 'done', createdAt: reply.createdAt, reply }
+  globalThis.fetch = async (url, options) => {
+    assert.equal(url, '/api/assistant/conversation/messages/stream')
+    assert.equal(options.headers.Authorization, 'Bearer token-A')
+    assert.equal(options.headers.Accept, 'text/event-stream')
+    assert.deepEqual(JSON.parse(options.body), { requestId: final.id, question: '你好', batchIdentifier: null })
+    return new Response(`: heartbeat\n\nevent: delta\ndata: ${JSON.stringify({ requestId: final.id, seq: 1, text: '你好' })}\n\nevent: result\ndata: ${JSON.stringify({ turn: final })}\n\n`, { headers: { 'Content-Type': 'text/event-stream' } })
+  }
+  const saved = await source.streamAssistantMessage(final.id, { question: '你好', batch: null }, new AbortController().signal, text => previews.push(text))
+  assert.deepEqual(previews, ['你好']); assert.deepEqual(saved, final)
+})
+test('问答流断流、序号跳跃、错请求、错终态及错误事件不自动重试', async () => {
+  const cases = [
+    ['event: delta\ndata: {"requestId":"x","seq":1,"text":"一半"}\n\n', 'STREAM_INCOMPLETE'],
+    ['event: delta\ndata: {"requestId":"x","seq":2,"text":"一半"}\n\n', 'STREAM_INVALID'],
+    ['event: delta\ndata: {"requestId":"other","seq":1,"text":"一半"}\n\n', 'STREAM_INVALID'],
+    ['event: error\ndata: {"status":502,"code":"AI_RESULT_CITATIONS_INVALID","message":"依据错误"}\n\n', 'AI_RESULT_CITATIONS_INVALID'],
+  ]
+  let calls = 0
+  for (const [frames, code] of cases) {
+    globalThis.fetch = async () => { calls++; return new Response(frames, { headers: { 'Content-Type': 'text/event-stream' } }) }
+    await assert.rejects(source.streamAssistantMessage('x', { question: '你好', batch: null }, new AbortController().signal, () => undefined), { code })
+  }
+  assert.equal(calls, cases.length); assert.equal(storage.getAccessToken(), 'token-A')
+})
+test('流式期间切账号，旧正文和终态均不能进入新账号', async () => {
+  let shown = 0
+  globalThis.fetch = async () => new Response('event: delta\ndata: {"requestId":"x","seq":1,"text":"第一段"}\n\nevent: delta\ndata: {"requestId":"x","seq":2,"text":"第二段"}\n\n', { headers: { 'Content-Type': 'text/event-stream' } })
+  await assert.rejects(source.streamAssistantMessage('x', { question: '你好', batch: null }, new AbortController().signal, () => {
+    shown++; storage.setAccessToken('token-B')
+  }), { name: 'AbortError' })
+  assert.equal(shown, 1)
+})
+test('独立知识契约允许受信植物智来源，但拒绝混入批次来源与危险 URL', async () => {
+  const { parseAssistantTurn } = await vite.ssrLoadModule('/src/services/assistantHistoryContract.ts')
+  const value = { id: 'knowledge-request', question: '铁皮石斛是什么', batch: null, status: 'done', createdAt: reply.createdAt,
+    reply: { ...reply, scope: 'knowledge', herbName: '铁皮石斛', question: '铁皮石斛是什么',
+      citations: [{ id: 'knowledge:iplant:铁皮石斛:origin', kind: 'knowledge', title: '铁皮石斛 · 来源植物', publisher: '中科院植物智', url: 'https://www.iplant.cn/info/%E9%93%81%E7%9A%AE%E7%9F%B3%E6%96%9B?t=z' }] } }
+  assert.equal(parseAssistantTurn(value).reply.scope, 'knowledge')
+  const mutate = source => ({ ...value, reply: { ...value.reply, citations: [source] } })
+  for (const source of [{ ...value.reply.citations[0], kind: 'batch', url: null },
+    { ...value.reply.citations[0], url: 'https://www.iplant.cn/redirect?url=evil' },
+    { ...value.reply.citations[0], url: 'https://www.iplant.cn.evil.test/info/铁皮石斛' }]) {
+    assert.throws(() => parseAssistantTurn(mutate(source)), { code: 'INVALID_RESPONSE' })
+  }
+})
+test('生成中正文单独标为未校验，不暴露复制/来源；停止后不展示半成品', async () => {
+  const { default: AssistantMessages } = await vite.ssrLoadModule('/src/components/assistant/AssistantMessages.tsx')
+  const pending = { id: 'generating', question: '你好', batch: null, status: 'pending', preview: '第一段正文' }
+  const html = renderToString(createElement(AssistantMessages, { turns: [pending], busy: true, retry: () => undefined }))
+  assert.match(html, /第一段正文|生成中/)
+  assert.match(html, /尚未校验/)
+  assert.doesNotMatch(html, /复制回答|查看依据/)
+  const stopped = renderToString(createElement(AssistantMessages, { turns: [{ ...pending, status: 'stopped' }], busy: false, retry: () => undefined }))
+  assert.match(stopped, /已停止回答/); assert.doesNotMatch(stopped, /第一段正文/)
+})
+test('流中账号禁用与普通 HTTP 一样触发失效，AI 上游失败不退出登录', async () => {
+  const api = await vite.ssrLoadModule('/src/services/api.ts')
+  const invalidations = []
+  api.setAuthFailureHandler(message => invalidations.push(message))
+  try {
+    for (const [code, status] of [['AI_UPSTREAM_ERROR', 502], ['ACCOUNT_DISABLED', 403]]) {
+      globalThis.fetch = async () => new Response(`event: error\ndata: ${JSON.stringify({ code, status, message: code })}\n\n`, { headers: { 'Content-Type': 'text/event-stream' } })
+      await assert.rejects(source.streamAssistantMessage('x', { question: '你好', batch: null }, new AbortController().signal, () => undefined), { code })
+    }
+    assert.deepEqual(invalidations, ['ACCOUNT_DISABLED'])
+  } finally { api.setAuthFailureHandler(() => undefined) }
+})
+
 test('demo 无批次不调用模型/后端，明确标识静态演示', async () => {
   await vite.close(); vite = await makeVite('demo')
   const demo = await vite.ssrLoadModule('/src/services/assistantDataSource.ts')
@@ -146,9 +217,9 @@ async function conversationHookHarness() {
 
 const turnResponse = (options, responseReply = reply, selected = null) => {
   const input = JSON.parse(options.body)
-  return new Response(JSON.stringify({ turn: { id: input.requestId, question: input.question,
+  return new Response(`event: result\ndata: ${JSON.stringify({ turn: { id: input.requestId, question: input.question,
     batch: selected, status: 'done', createdAt: responseReply.createdAt,
-    reply: { ...responseReply, question: input.question } } }))
+    reply: { ...responseReply, question: input.question } } })}\n\n`, { headers: { 'Content-Type': 'text/event-stream' } })
 }
 
 test('共享 Hook 拦截同一轮连续发送，保存发送时批次，完成后释放锁', async () => {
@@ -159,7 +230,7 @@ test('共享 Hook 拦截同一轮连续发送，保存发送时批次，完成�
   const gate = new Promise((resolve) => { release = resolve })
   globalThis.fetch = async (url, options) => {
     calls++
-    assert.equal(url, '/api/assistant/conversation/messages')
+    assert.equal(url, '/api/assistant/conversation/messages/stream')
     const input = JSON.parse(options.body)
     assert.match(input.requestId, /^[0-9a-f-]{36}$/)
     assert.equal(input.question, batchReply.question)
@@ -237,14 +308,14 @@ test('共享 Hook 上游失败释放锁，登出后旧 Hook 不再发送请求',
   assert.equal(calls, 2)
 })
 
-test('消息组件将资料不足单独标识，纯文本转义模型 HTML，原始资料不直接展示', async () => {
+test('正常拒答不标红或挂失败提示，纯文本转义模型 HTML，原始资料不直接展示', async () => {
   const { default: AssistantMessages } = await vite.ssrLoadModule('/src/components/assistant/AssistantMessages.tsx')
   const html = renderToString(createElement(AssistantMessages, {
     turns: [{ id: 'turn', question: reply.question, batch: null, status: 'done',
       reply: { ...reply, status: 'insufficient', answer: '<script>not executable</script>' } }],
     busy: false, retry: () => undefined,
   }))
-  assert.match(html, /资料不足 \/ 暂无法回答/)
+  assert.doesNotMatch(html, /资料不足 \/ 暂无法回答|ant-typography-danger|重新提问/)
   assert.ok(html.includes('&lt;script&gt;not executable&lt;/script&gt;'))
   assert.ok(!html.includes('<script>not executable</script>'))
 })

@@ -1,6 +1,7 @@
 import { ApiError } from './api'
 import type { AssistantBatch, AssistantHistory, AssistantReply, AssistantTurn } from '../types/assistant'
 import { parseGeneralAssistantReply } from './assistantContract'
+import { isKnowledgeSourceUrl } from './knowledgeSourceUrl'
 
 const fail = (): never => { throw new ApiError(0, 'INVALID_RESPONSE', 'AI 会话返回格式不正确') }
 const text = (value: unknown, max: number): value is string =>
@@ -23,7 +24,10 @@ function batchLabel(value: unknown): AssistantBatch | null {
 function reply(value: unknown, question: string, batch: AssistantBatch | null): AssistantReply {
   const item = record(value)
   if (item.scope === 'general') return parseGeneralAssistantReply(item, question, 'api')
-  if (item.scope !== 'batch' || !batch || item.batchId !== batch.id || item.question !== question
+  const knowledge = item.scope === 'knowledge'
+  if (knowledge ? item.batchId !== null || !text(item.herbName, 100) || batch !== null
+    : item.scope !== 'batch' || !batch || item.batchId !== batch.id) return fail()
+  if (item.question !== question
     || !text(item.id, 150) || !text(item.answer, 3_000) || item.mode !== 'api'
     || item.status !== 'answered' && item.status !== 'insufficient'
     || item.modelName !== null && !text(item.modelName, 150)
@@ -33,20 +37,19 @@ function reply(value: unknown, question: string, batch: AssistantBatch | null): 
     const source = record(value)
     if (!text(source.id, 150) || !text(source.title, 200) || !text(source.publisher, 200)
       || source.kind !== 'batch' && source.kind !== 'knowledge') return fail()
+    if (knowledge && source.kind !== 'knowledge') return fail()
     if (source.kind === 'batch' && source.url !== null) return fail()
     if (source.kind === 'knowledge') {
       if (!text(source.url, 500)) return fail()
-      let url: URL
-      try { url = new URL(source.url) } catch { return fail() }
-      if (url.protocol !== 'https:' || url.hostname !== 'sys01.lib.hkbu.edu.hk' || url.username || url.password
-        || url.pathname !== '/cmed/mmid/detail.php') return fail()
+      if (!isKnowledgeSourceUrl(source.url)) return fail()
     }
     // 只返回公开引用元信息，不把 excerpt / 原始上下文传进组件。
     return { id: source.id, kind: source.kind, title: source.title, publisher: source.publisher, url: source.url as string | null }
   })
   if (new Set(citations.map((source) => source.id)).size !== citations.length
     || item.status === 'answered' && !citations.length) return fail()
-  return { id: item.id, scope: 'batch', batchId: batch.id, question,
+  return { id: item.id, scope: knowledge ? 'knowledge' : 'batch', batchId: knowledge ? null : batch!.id,
+    ...(knowledge ? { herbName: item.herbName as string } : {}), question,
     answer: item.answer, status: item.status, citations, mode: 'api',
     modelName: item.modelName as string | null, createdAt: date(item.createdAt) }
 }
