@@ -52,7 +52,7 @@ export async function sendAssistantMessage(id: string, input: AssistantRequest, 
   return parseAssistantTurn(response.turn, { id, question })
 }
 
-/** POST + fetch SSE 支持 Bearer、请求体与取消；不在失流后自动重跑付费请求。 */
+/** POST + fetch SSE 支持 Cookie/CSRF、请求体与取消；不在失流后自动重跑付费请求。 */
 export async function streamAssistantMessage(id: string, input: AssistantRequest, signal: AbortSignal, onAnswer: (text: string) => void): Promise<AssistantTurn> {
   if (authMode === 'demo') return sendAssistantMessage(id, input, signal)
   const question = input.question.trim()

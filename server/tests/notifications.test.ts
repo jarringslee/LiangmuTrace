@@ -1,3 +1,4 @@
+import { sessionHeaders } from './helpers/session.js'
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import { createServer, type Server } from 'node:http'
@@ -80,10 +81,10 @@ function event<T = unknown>(socket: Socket, name: string): Promise<T> {
     socket.once(name, handler)
   })
 }
-function client(url: string, token: string, origin = 'http://localhost:5173') {
+function client(url: string, token?: string, origin = 'http://localhost:5173') {
   return connect(url, {
     autoConnect: false, reconnection: false, transports: ['websocket'],
-    auth: { token }, extraHeaders: { Origin: origin }
+    extraHeaders: { ...sessionHeaders(token), Origin: origin }
   })
 }
 
@@ -119,9 +120,9 @@ test('通知 HTTP 认证、角色、严格查询/请求体和已读响应契约'
   const server = createServer(app), url = await listen(server)
   try {
     assert.equal((await fetch(`${url}/api/notifications`)).status, 401)
-    const headers = { Authorization: `Bearer ${await signAccessToken('admin-a')}`, 'Content-Type': 'application/json' }
+    const headers = { ...sessionHeaders(await signAccessToken('admin-a')), 'Content-Type': 'application/json' }
     assert.equal((await fetch(`${url}/api/notifications`, {
-      headers: { Authorization: `Bearer ${await signAccessToken('grower')}` },
+      headers: { ...sessionHeaders(await signAccessToken('grower')) },
     })).status, 200)
     for (const query of ['?recipientId=admin-b', '?page=0', '?pageSize=101', '?status=chat', '?page=1&page=2']) {
       assert.equal((await fetch(`${url}/api/notifications${query}`, { headers })).status, 400)
@@ -289,21 +290,50 @@ test('真实 Socket 握手验签/角色/Origin，不允许前端冒领用户房�
   const io = attachNotificationRealtime(server, auth, changes), url = await listen(server)
   const sockets: Socket[] = []
   try {
+    const token = await signAccessToken('admin-a')
     for (const input of [
-      { token: 'invalid' },
-      { token: await signAccessToken('admin-a'), recipientId: 'admin-b' },
+      { token: undefined, auth: {}, code: 'UNAUTHENTICATED' },
+      { token: 'invalid', auth: {}, code: 'INVALID_TOKEN' },
+      { token, auth: { token }, code: 'INVALID_HANDSHAKE' },
+      { token, auth: { recipientId: 'admin-b' }, code: 'INVALID_HANDSHAKE' },
+      { token, auth: { userId: 'admin-b' }, code: 'SESSION_CHANGED' },
     ]) {
-      const socket = client(url, input.token); sockets.push(socket); socket.auth = input
-      const rejected = event(socket, 'connect_error'); socket.connect(); await rejected
+      const socket = client(url, input.token); sockets.push(socket); socket.auth = input.auth
+      const rejected = event<{ data: { code: string } }>(socket, 'connect_error')
+      socket.connect()
+      assert.equal((await rejected).data.code, input.code)
       assert.equal(socket.connected, false)
     }
     const evil = client(url, await signAccessToken('admin-a'), 'https://evil.example'); sockets.push(evil)
     const rejected = event(evil, 'connect_error'); evil.connect(); await rejected
     assert.equal(evil.connected, false)
     const grower = client(url, await signAccessToken('grower')); sockets.push(grower)
+    grower.auth = { userId: 'grower' }
     const connected = event(grower, 'connect'); grower.connect(); await connected
     assert.equal(grower.connected, true)
   } finally { sockets.forEach((socket) => socket.disconnect()); await new Promise<void>((resolve) => io.close(() => resolve())) }
+})
+
+test('Socket polling 与 WebSocket 都读取 Cookie，不依赖前端 auth.token', async () => {
+  const { auth, changes } = setup(), server = createServer()
+  const io = attachNotificationRealtime(server, auth, changes), url = await listen(server)
+  const sockets: Socket[] = []
+  try {
+    for (const transports of [['polling'], ['polling', 'websocket'], ['websocket']]) {
+      const socket = connect(url, { transports, autoConnect: false, reconnection: false,
+        extraHeaders: { ...sessionHeaders(await signAccessToken('admin-a')), Origin: 'http://localhost:5173' } })
+      sockets.push(socket)
+      const connected = event(socket, 'connect'); socket.connect(); await connected
+      const changed = event(socket, 'notifications:changed'); changes.publish(['admin-a']); await changed
+      assert.equal(socket.connected, true)
+    }
+    // 只有旧 auth.token 而没有 Cookie 时拒绝，防止遗留前端绕回旧契约。
+    const legacy = connect(url, { autoConnect: false, reconnection: false, transports: ['websocket'],
+      auth: { token: await signAccessToken('admin-a') } })
+    sockets.push(legacy)
+    const rejected = event(legacy, 'connect_error'); legacy.connect(); await rejected
+    assert.equal(legacy.connected, false)
+  } finally { sockets.forEach(socket => socket.disconnect()); await new Promise<void>(resolve => io.close(() => resolve())) }
 })
 
 test('提示只进入本用户房间/多标签，断线未收到的消息可重连后 REST 补查', async () => {

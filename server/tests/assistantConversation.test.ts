@@ -1,3 +1,4 @@
+import { sessionHeaders } from './helpers/session.js'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { once } from 'node:events'
@@ -298,7 +299,7 @@ test('会话 HTTP 认证/严格请求/no-store/表缺失提示，拒绝指定其
   app.use(errorHandler)
   const server = app.listen(0, '127.0.0.1'); await once(server, 'listening')
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/assistant`
-  const headers = { Authorization: `Bearer ${await signAccessToken(user.id)}`, 'Content-Type': 'application/json' }
+  const headers = { ...sessionHeaders(await signAccessToken(user.id)), 'Content-Type': 'application/json' }
   try {
     assert.equal((await fetch(`${base}/conversation`)).status, 401)
     assert.equal((await fetch(`${base}/conversation?userId=other`, { headers })).status, 400)
@@ -333,7 +334,7 @@ test('新会话 HTTP 断开取消模型并持久化 stopped，不保存迟到成
   try {
     const controller = new AbortController()
     const pending = assert.rejects(fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/assistant/conversation/messages`, {
-      method: 'POST', headers: { Authorization: `Bearer ${await signAccessToken(user.id)}`, 'Content-Type': 'application/json' },
+      method: 'POST', headers: { ...sessionHeaders(await signAccessToken(user.id)), 'Content-Type': 'application/json' },
       body: JSON.stringify(input()), signal: controller.signal,
     }), { name: 'AbortError' })
     await entered; controller.abort(); await pending; await ended
@@ -414,7 +415,7 @@ test('HTTP 真实问答 SSE 在模型结束前推正文，校验落库后才有 
   app.use(express.json()); app.use('/api/assistant', createAssistantRouter({ ...h.options.auth, login: async () => user }, createAssistantService(h.options.model), service)); app.use(errorHandler)
   const server = app.listen(0, '127.0.0.1'); await once(server, 'listening')
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/assistant/conversation/messages/stream`
-  const headers = { Authorization: `Bearer ${await signAccessToken(user.id)}`, 'Content-Type': 'application/json' }
+  const headers = { ...sessionHeaders(await signAccessToken(user.id)), 'Content-Type': 'application/json' }
   try {
     const request = input('你好')
     const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(request) })

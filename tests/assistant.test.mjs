@@ -26,10 +26,10 @@ beforeEach(async () => {
   source = await vite.ssrLoadModule('/src/services/assistantDataSource.ts')
   parse = (await vite.ssrLoadModule('/src/services/assistantContract.ts')).parseGeneralAssistantReply
   storage = await vite.ssrLoadModule('/src/utils/auth.ts')
-  storage.setAccessToken('token-A')
+  storage.advanceAuthRevision('user-A')
 })
 afterEach(async () => {
-  auth?.logout(); auth = undefined
+  auth?.invalidateAuth(); auth = undefined
   queryClient?.clear(); queryClient = undefined
   await vite.close()
   globalThis.fetch = realFetch
@@ -45,13 +45,13 @@ test('普通回复按问题/模式/来源/批次/模型/日期校验，白名单
   }
 })
 
-test('无批次请求只发送本轮问题，JWT/取消复用，不上传 UI 历史', async () => {
+test('无批次请求只发送本轮问题，Cookie/取消复用，不上传 UI 历史', async () => {
   let calls = 0
   globalThis.fetch = async (url, options) => {
     calls++
     assert.equal(url, '/api/assistant/chat')
     assert.equal(options.method, 'POST')
-    assert.equal(options.headers.Authorization, 'Bearer token-A')
+    assert.equal(options.credentials, 'include'); assert.equal(options.headers.Authorization, undefined)
     assert.deepEqual(JSON.parse(options.body), { question: '你好' })
     assert.equal(options.signal.aborted, false)
     return new Response(JSON.stringify({ reply }))
@@ -79,17 +79,17 @@ test('普通聊天失败不自动重试或清除登录，切账号的迟到回�
   let calls = 0
   globalThis.fetch = async () => { calls++; return new Response(JSON.stringify({ error: { code: 'AI_UPSTREAM_ERROR', message: 'fixture' } }), { status: 502 }) }
   await assert.rejects(source.askAssistant({ question: '你好', batch: null }, new AbortController().signal), { code: 'AI_UPSTREAM_ERROR' })
-  assert.equal(calls, 1); assert.equal(storage.getAccessToken(), 'token-A')
-  globalThis.fetch = async () => { storage.setAccessToken('token-B'); return new Response(JSON.stringify({ reply })) }
+  assert.equal(calls, 1); assert.equal(storage.getAuthUserId(), 'user-A')
+  globalThis.fetch = async () => { storage.advanceAuthRevision('user-B'); return new Response(JSON.stringify({ reply })) }
   await assert.rejects(source.askAssistant({ question: '你好', batch: null }, new AbortController().signal), { name: 'AbortError' })
 })
 
-test('真实回答流使用 Bearer/UUID，增量先到达；仅校验后的终态构建 reply', async () => {
+test('真实回答流使用 Cookie/UUID，增量先到达；仅校验后的终态构建 reply', async () => {
   const previews = []
   const final = { id: 'stream-request', question: '你好', batch: null, status: 'done', createdAt: reply.createdAt, reply }
   globalThis.fetch = async (url, options) => {
     assert.equal(url, '/api/assistant/conversation/messages/stream')
-    assert.equal(options.headers.Authorization, 'Bearer token-A')
+    assert.equal(options.credentials, 'include'); assert.equal(options.headers.Authorization, undefined)
     assert.equal(options.headers.Accept, 'text/event-stream')
     assert.deepEqual(JSON.parse(options.body), { requestId: final.id, question: '你好', batchIdentifier: null })
     return new Response(`: heartbeat\n\nevent: delta\ndata: ${JSON.stringify({ requestId: final.id, seq: 1, text: '你好' })}\n\nevent: result\ndata: ${JSON.stringify({ turn: final })}\n\n`, { headers: { 'Content-Type': 'text/event-stream' } })
@@ -109,13 +109,13 @@ test('问答流断流、序号跳跃、错请求、错终态及错误事件不�
     globalThis.fetch = async () => { calls++; return new Response(frames, { headers: { 'Content-Type': 'text/event-stream' } }) }
     await assert.rejects(source.streamAssistantMessage('x', { question: '你好', batch: null }, new AbortController().signal, () => undefined), { code })
   }
-  assert.equal(calls, cases.length); assert.equal(storage.getAccessToken(), 'token-A')
+  assert.equal(calls, cases.length); assert.equal(storage.getAuthUserId(), 'user-A')
 })
 test('流式期间切账号，旧正文和终态均不能进入新账号', async () => {
   let shown = 0
   globalThis.fetch = async () => new Response('event: delta\ndata: {"requestId":"x","seq":1,"text":"第一段"}\n\nevent: delta\ndata: {"requestId":"x","seq":2,"text":"第二段"}\n\n', { headers: { 'Content-Type': 'text/event-stream' } })
   await assert.rejects(source.streamAssistantMessage('x', { question: '你好', batch: null }, new AbortController().signal, () => {
-    shown++; storage.setAccessToken('token-B')
+    shown++; storage.advanceAuthRevision('user-B')
   }), { name: 'AbortError' })
   assert.equal(shown, 1)
 })
@@ -167,7 +167,7 @@ test('demo 无批次不调用模型/后端，明确标识静态演示', async ()
 test('共享会话 key 不包含 Token，同账号重新登录也分隔，旧身份检查失效', async () => {
   auth = await vite.ssrLoadModule('/src/services/auth.ts')
   const session = await vite.ssrLoadModule('/src/services/assistantSession.ts')
-  globalThis.fetch = async () => new Response(JSON.stringify({ accessToken: 'fixture-token', user: {
+  globalThis.fetch = async () => new Response(JSON.stringify({ user: {
     id: 'user-A', username: 'fixture', email: 'fixture@example.test', displayName: 'fixture', role: 'buyer', organizationId: null, organization: null,
   } }))
   const first = await auth.login({ account: 'fixture', password: 'fixture', role: 'buyer' })
@@ -175,7 +175,7 @@ test('共享会话 key 不包含 Token，同账号重新登录也分隔，旧身
   assert.equal(session.assistantSessionKey(first), key)
   assert.equal(key.includes('fixture-token'), false)
   assert.equal(session.isCurrentAssistantSession(first), true)
-  auth.logout()
+  auth.invalidateAuth()
   const second = await auth.login({ account: 'fixture', password: 'fixture', role: 'buyer' })
   assert.notEqual(session.assistantSessionKey(second), key)
   assert.equal(session.isCurrentAssistantSession(first), false)
@@ -193,7 +193,7 @@ test('批次前缀与友好引用编号，不展示内部来源 ID 或篡改原�
 
 async function conversationHookHarness() {
   auth = await vite.ssrLoadModule('/src/services/auth.ts')
-  globalThis.fetch = async () => new Response(JSON.stringify({ accessToken: 'fixture-token', user: {
+  globalThis.fetch = async () => new Response(JSON.stringify({ user: {
     id: 'user-A', username: 'fixture', email: 'fixture@example.test', displayName: 'fixture', role: 'buyer', organizationId: null, organization: null,
   } }))
   const session = await auth.login({ account: 'fixture', password: 'fixture', role: 'buyer' })
@@ -303,7 +303,7 @@ test('共享 Hook 上游失败释放锁，登出后旧 Hook 不再发送请求',
   assert.equal(calls, 1)
   await hook.send({ question: reply.question, batch: null })
   assert.equal(calls, 2)
-  auth.logout()
+  auth.invalidateAuth()
   await hook.send({ question: reply.question, batch: null })
   assert.equal(calls, 2)
 })
@@ -353,7 +353,7 @@ test('会话 GET 只取本人历史；POST 只提交 UUID/本轮问题/编号，
   let calls = 0
   globalThis.fetch = async (url, options) => {
     calls++
-    assert.equal(options.headers.Authorization, 'Bearer token-A')
+    assert.equal(options.credentials, 'include'); assert.equal(options.headers.Authorization, undefined)
     if (options.method === 'GET') {
       assert.equal(url, '/api/assistant/conversation')
       return new Response(JSON.stringify(history))
@@ -382,7 +382,7 @@ test('会话取消/换账号丢弃结果，503 不自动重试或伪造本地恢
   globalThis.fetch = async () => { calls++; return new Response(JSON.stringify(history)) }
   await assert.rejects(source.getAssistantHistory(controller.signal), { name: 'AbortError' })
   assert.equal(calls, 0)
-  globalThis.fetch = async () => { calls++; storage.setAccessToken('token-B'); return new Response(JSON.stringify(history)) }
+  globalThis.fetch = async () => { calls++; storage.advanceAuthRevision('user-B'); return new Response(JSON.stringify(history)) }
   await assert.rejects(source.getAssistantHistory(new AbortController().signal), { name: 'AbortError' })
   globalThis.fetch = async () => { calls++; return new Response(JSON.stringify({ error: {
     code: 'ASSISTANT_STORAGE_NOT_READY', message: '迁移尚未应用',

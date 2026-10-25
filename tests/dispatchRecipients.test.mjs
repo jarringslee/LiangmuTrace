@@ -86,7 +86,7 @@ async function setup(mode = 'api') {
   fixture.session = admin
   source = await vite.ssrLoadModule('/src/services/herbDataSource.ts')
   authStorage = await vite.ssrLoadModule('/src/utils/auth.ts')
-  authStorage.setAccessToken('test-token')
+  authStorage.advanceAuthRevision('test-user')
 }
 
 beforeEach(async () => {
@@ -115,7 +115,7 @@ test('采购候选数据源使用认证 GET、透传 signal，只返回最小字
   globalThis.fetch = async (url, options) => {
     calls++; assert.equal(url, '/api/batches/dispatch-recipients')
     assert.equal(options.method, 'GET'); assert.equal(options.body, undefined)
-    assert.equal(options.headers.Authorization, 'Bearer test-token'); assert.ok(options.signal)
+    assert.equal(options.credentials, 'include'); assert.equal(options.headers.Authorization, undefined); assert.ok(options.signal)
     return json({ items: [{ id: 'buyer-org', name: '采购组织', email: 'private-data' }] })
   }
   assert.deepEqual(await source.listDispatchRecipients(), [{ id: 'buyer-org', name: '采购组织' }])
@@ -141,7 +141,7 @@ test('采购候选 API 不把权限/限流/网络异常转为空或 demo，身�
   globalThis.fetch = async () => { calls++; throw new TypeError('offline') }
   await assert.rejects(source.listDispatchRecipients(), { code: 'NETWORK_ERROR' })
   globalThis.fetch = async () => {
-    calls++; authStorage.setAccessToken('another-account-token')
+    calls++; authStorage.advanceAuthRevision('another-account-token')
     return json({ items: [{ id: 'old-recipient', name: '旧账号候选' }] })
   }
   await assert.rejects(source.listDispatchRecipients(), { name: 'AbortError' })
@@ -190,7 +190,7 @@ test('通用详情数据源保留 ID 大小写，仅溯源码大写化；空输�
   const paths = []
   globalThis.fetch = async (url, options) => {
     paths.push(url); assert.equal(options.method, 'GET')
-    assert.equal(options.headers.Authorization, 'Bearer test-token')
+    assert.equal(options.credentials, 'include'); assert.equal(options.headers.Authorization, undefined)
     return json({ batch: { ...apiBatch, id: mixedId } })
   }
   assert.equal((await source.getHerbBatchByIdentifier(`  ${mixedId}  `)).id, mixedId)
@@ -211,7 +211,7 @@ test('通用详情仅将 404 转为 null，权限/网络错误不回退 demo，�
   globalThis.fetch = async () => { calls++; throw new TypeError('offline') }
   await assert.rejects(source.getHerbBatchByIdentifier('cmv28Lower'), { code: 'NETWORK_ERROR' })
   globalThis.fetch = async () => {
-    calls++; authStorage.setAccessToken('new-account-token'); return json({ batch: apiBatch })
+    calls++; authStorage.advanceAuthRevision('new-account-token'); return json({ batch: apiBatch })
   }
   await assert.rejects(source.getHerbBatchByIdentifier('cmv28Lower'), { name: 'AbortError' })
   assert.equal(calls, 6)
@@ -389,7 +389,7 @@ test('出库仅提交目标组织，收货空请求体；认证与详情映射�
   let calls = 0
   globalThis.fetch = async (url, options) => {
     calls++; assert.equal(options.method, 'POST')
-    assert.equal(options.headers.Authorization, 'Bearer test-token')
+    assert.equal(options.credentials, 'include'); assert.equal(options.headers.Authorization, undefined)
     if (url.endsWith('/shipping/dispatch')) {
       assert.equal(url, '/api/batches/batch%2Fa/shipping/dispatch')
       assert.deepEqual(JSON.parse(options.body), { buyerOrganizationId: 'buyer-org' })
@@ -419,7 +419,7 @@ test('出库/收货写入错误不吞掉、不自动重试、不回退 demo；�
   globalThis.fetch = async () => { calls++; throw new TypeError('offline') }
   await assert.rejects(source.confirmHerbReceipt(batch.id), { code: 'NETWORK_ERROR' })
   globalThis.fetch = async () => {
-    calls++; authStorage.setAccessToken('new-account-token'); return json({ batch: apiBatch })
+    calls++; authStorage.advanceAuthRevision('new-account-token'); return json({ batch: apiBatch })
   }
   await assert.rejects(source.dispatchHerbBatch(batch.id, { buyerOrganizationId: 'buyer-org' }), { name: 'AbortError' })
   assert.equal(calls, 4)

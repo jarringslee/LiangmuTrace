@@ -1,3 +1,4 @@
+import { sessionHeaders, loginToken } from './helpers/session.js'
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import { after, test } from 'node:test'
@@ -61,12 +62,12 @@ const server = app().listen(0, '127.0.0.1'); await once(server, 'listening')
 const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
 after(async () => { await new Promise<void>(resolve => server.close(() => resolve())); await prisma.$disconnect() })
 async function request(path: string, method = 'GET', body?: unknown, token?: string) {
-  return fetch(base + path, { method, headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+  return fetch(base + path, { method, headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...sessionHeaders(token) },
     ...(body ? { body: JSON.stringify(body) } : {}) })
 }
 async function login(account: string, role = account) {
   const response = await request('/api/auth/login', 'POST', { account, password, role }); assert.equal(response.status, 200)
-  return (await response.json()).accessToken as string
+  return loginToken(response)
 }
 const registration = { username: 'testbuyer', email: 'TEST@EXAMPLE.INVALID', displayName: '测试采购商', password, organizationName: '个人采购组织' }
 

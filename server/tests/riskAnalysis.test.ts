@@ -1,3 +1,4 @@
+import { sessionHeaders } from './helpers/session.js'
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import { test } from 'node:test'
@@ -349,7 +350,7 @@ test('HTTP 权限、严格入参和 AI 限流生效，AI 路由不拦截普通�
   const buyerToken = await signAccessToken(buyer.id)
   const send = (path: string, token?: string, body?: unknown) => fetch(`${base}${path}`, {
     method: body === undefined ? 'GET' : 'POST',
-    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    headers: { 'Content-Type': 'application/json', ...sessionHeaders(token) },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   try {
@@ -456,7 +457,7 @@ test('SSE 在模型等待时已经推送阶段，完成后以 result 终结', as
     },
   })
   await withRiskApi(service, async (base, token) => {
-    const response = await fetch(`${base}/stream`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } })
+    const response = await fetch(`${base}/stream`, { method: 'POST', headers: { ...sessionHeaders(token) } })
     assert.equal(response.status, 200)
     assert.match(response.headers.get('content-type')!, /text\/event-stream/)
     assert.match(response.headers.get('cache-control')!, /no-transform/)
@@ -485,7 +486,7 @@ test('SSE 开始前权限/入参/阶段错误仍为 HTTP JSON，两种分析接�
   const { service, batch } = setup()
   await withRiskApi(service, async (base, token) => {
     const post = (path: string, tokenValue?: string, body?: unknown) => fetch(`${base}${path}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', ...(tokenValue ? { Authorization: `Bearer ${tokenValue}` } : {}) },
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...sessionHeaders(tokenValue) },
       body: body === undefined ? undefined : JSON.stringify(body),
     })
     assert.equal((await post('/stream')).status, 401)
@@ -512,7 +513,7 @@ test('开始 SSE 后的上游错误变为安全 error 事件，没有 result 或
   for (const failure of [new HttpError(502, 'AI_UPSTREAM_ERROR', 'AI 暂不可用'), new Error('private provider diagnostic')]) {
     const { service, writes } = setup({ ...mockModel(), complete: async () => { throw failure } })
     await withRiskApi(service, async (base, token) => {
-      const response = await fetch(`${base}/stream`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } })
+      const response = await fetch(`${base}/stream`, { method: 'POST', headers: { ...sessionHeaders(token) } })
       assert.equal(response.status, 200)
       const text = await response.text()
       assert.match(text, /event: error/)
@@ -537,7 +538,7 @@ test('浏览器中止 SSE 会取消模型请求，不落库并释放同批次保
   await withRiskApi(service, async (base, token) => {
     const controller = new AbortController()
     const response = await fetch(`${base}/stream`, {
-      method: 'POST', headers: { Authorization: `Bearer ${token}` }, signal: controller.signal,
+      method: 'POST', headers: { ...sessionHeaders(token) }, signal: controller.signal,
     })
     const reader = response.body!.getReader()
     await reader.read()

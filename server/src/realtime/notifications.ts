@@ -4,12 +4,13 @@ import { Server } from 'socket.io'
 import { z } from 'zod'
 import { env } from '../config/env.js'
 import { verifyAccessToken } from '../lib/token.js'
+import { readSessionToken } from '../lib/sessionCookie.js'
 import { HttpError } from '../middleware/error.js'
 import type { AuthService, AuthUser } from '../services/auth.js'
 import { notificationChanges, type NotificationChanges } from '../services/notificationChanges.js'
 import { chatChanges } from '../services/chatChanges.js'
 
-const handshakeSchema = z.object({ token: z.string().min(1).max(4096) }).strict()
+const handshakeSchema = z.object({ userId: z.string().min(1).max(200).optional() }).strict()
 type ServerEvents = {
   'notifications:changed': () => void
   'chat:changed': () => void
@@ -27,14 +28,20 @@ export function attachNotificationRealtime(
   humanChatChanges: NotificationChanges = chatChanges,
 ) {
   const io = new Server<Record<string, never>, ServerEvents, Record<string, never>, SocketData>(server, {
-    cors: { origin: env.CLIENT_ORIGIN }, maxHttpBufferSize: 16_384,
-    // CORS 本身不约束 WebSocket，额外检查浏览器握手 Origin；无 Origin 的 CLI 仍须 JWT。
+    cors: { origin: env.CLIENT_ORIGIN, credentials: true }, maxHttpBufferSize: 16_384,
+    // CORS 本身不约束 WebSocket，额外检查浏览器握手 Origin；无 Origin 的 CLI 仍须有效 Cookie。
     allowRequest: (req, done) => done(null, !req.headers.origin || req.headers.origin === env.CLIENT_ORIGIN),
   })
   io.use(async (socket, next) => {
     try {
-      const { token } = handshakeSchema.parse(socket.handshake.auth)
+      // 不再接收前端 token 或指定用户/房间，只读取浏览器握手自动携带的 Cookie。
+      const expected = handshakeSchema.parse(socket.handshake.auth)
+      const token = readSessionToken(socket.request.headers.cookie)
+      if (!token) throw new HttpError(401, 'UNAUTHENTICATED', '请先登录')
       const user = await auth.currentUser(await verifyAccessToken(token))
+      if (expected.userId && expected.userId !== user.id) {
+        throw new HttpError(409, 'SESSION_CHANGED', '登录账号已变化，请刷新页面后重试')
+      }
       // 仅在签名、issuer、audience 和有效期验证通过后读取 exp，不能用 decode 代替验签。
       socket.data = { user, token, expiresAt: decodeJwt(token).exp! * 1000 }
       next()

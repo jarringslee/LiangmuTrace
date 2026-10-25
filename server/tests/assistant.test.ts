@@ -1,3 +1,4 @@
+import { sessionHeaders } from './helpers/session.js'
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import { test } from 'node:test'
@@ -179,7 +180,7 @@ async function httpHarness(service = createAssistantService()) {
   await once(server, 'listening')
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/assistant/chat`
   const send = (token?: string, body: unknown = { question: '你好' }, signal?: AbortSignal) => fetch(base, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...sessionHeaders(token) },
     body: JSON.stringify(body), signal,
   })
   return { users, send, close: async () => { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())) } }

@@ -1,3 +1,4 @@
+import { sessionHeaders } from './helpers/session.js'
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import type { AddressInfo } from 'node:net'
@@ -98,10 +99,10 @@ test('HTTP 认证、四角色拦截、no-store、严格参数和停用账号检�
   try {
     assert.equal((await fetch(url)).status, 401)
     for (const role of ['buyer', 'grower', 'processor']) {
-      assert.equal((await fetch(url, { headers: { Authorization: `Bearer ${await signAccessToken(role)}` } })).status, 403)
+      assert.equal((await fetch(url, { headers: { ...sessionHeaders(await signAccessToken(role)) } })).status, 403)
     }
     assert.equal(reads, 0)
-    const headers = { Authorization: `Bearer ${await signAccessToken('admin')}` }
+    const headers = { ...sessionHeaders(await signAccessToken('admin')) }
     const ok = await fetch(url, { headers })
     assert.equal(ok.status, 200); assert.equal(ok.headers.get('cache-control'), 'no-store')
     assert.equal((await ok.json()).summary.totalBatches, 0)

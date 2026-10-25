@@ -1,3 +1,4 @@
+import { sessionHeaders } from './helpers/session.js'
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import { createServer } from 'node:http'
@@ -139,7 +140,7 @@ test('人工聊天 HTTP 严格校验、认证/私有缓存，不接受伪造 sen
   const { service } = setup()
   app.use('/api/chat', createChatRouter(auth, service)); app.use(errorHandler)
   const server = createServer(app), url = await listen(server)
-  const headers = { Authorization: `Bearer ${await signAccessToken('admin-a')}`, 'Content-Type': 'application/json' }
+  const headers = { ...sessionHeaders(await signAccessToken('admin-a')), 'Content-Type': 'application/json' }
   try {
     assert.equal((await fetch(`${url}/api/chat/conversations`)).status, 401)
     for (const [path, method, body] of [
@@ -167,7 +168,7 @@ test('会话创建和发送共用用户级限流，另一账号不共用额度',
   const app = express(); app.use(express.json())
   app.use('/api/chat', createChatRouter(auth, setup().service)); app.use(errorHandler)
   const server = createServer(app), url = await listen(server)
-  const headers = { Authorization: `Bearer ${await signAccessToken('admin-a')}`, 'Content-Type': 'application/json' }
+  const headers = { ...sessionHeaders(await signAccessToken('admin-a')), 'Content-Type': 'application/json' }
   try {
     for (let i = 0; i < 30; i++) assert.equal((await fetch(`${url}/api/chat/conversations`, {
       method: 'POST', headers, body: JSON.stringify({ recipientId: contact.id }),
@@ -176,7 +177,7 @@ test('会话创建和发送共用用户级限流，另一账号不共用额度',
       body: JSON.stringify({ clientMessageId: requestId, content: '测试' }) })
     assert.equal(limited.status, 429); assert.ok(limited.headers.get('Retry-After'))
     assert.equal((await fetch(`${url}/api/chat/conversations`, { method: 'POST',
-      headers: { ...headers, Authorization: `Bearer ${await signAccessToken('admin-b')}` },
+      headers: { ...headers, ...sessionHeaders(await signAccessToken('admin-b')) },
       body: JSON.stringify({ recipientId: contact.id }),
     })).status, 200)
   } finally { await new Promise<void>((resolve) => server.close(() => resolve())) }
@@ -187,7 +188,7 @@ test('人工聊天 Socket 提示只给参与双方，复用通知连接但不混
   const server = createServer(), realtime = attachNotificationRealtime(server, auth, notify, 30_000, chats)
   const url = await listen(server)
   const sockets = await Promise.all(['admin-a', 'buyer-b', 'outsider'].map(async (id) => connect(url, {
-    auth: { token: await signAccessToken(id) }, transports: ['websocket'], autoConnect: false, reconnection: false,
+    extraHeaders: sessionHeaders(await signAccessToken(id)), transports: ['websocket'], autoConnect: false, reconnection: false,
   })))
   try {
     await Promise.all(sockets.map(async (socket) => { const ready = socketEvent(socket, 'connect'); socket.connect(); await ready }))

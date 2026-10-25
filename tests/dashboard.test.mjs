@@ -39,7 +39,7 @@ beforeEach(async () => {
   utils = await vite.ssrLoadModule('/src/utils/dashboard.ts')
   source = await vite.ssrLoadModule('/src/services/dashboardDataSource.ts')
   storage = await vite.ssrLoadModule('/src/utils/auth.ts')
-  storage.setAccessToken('token-A')
+  storage.advanceAuthRevision('user-A')
 })
 afterEach(async () => {
   queryClient?.clear(); queryClient = undefined
@@ -84,12 +84,12 @@ test('契约拒绝非法计数、分布缺失/重复/总数不一致、错误待
   ]) assert.throws(() => contract.parseDashboardOverview(input, 'api'), { code: 'INVALID_RESPONSE' })
 })
 
-test('API 看板只有一个只读请求，携带 JWT/取消信号，不拉批次详情或上传组织', async () => {
+test('API 看板只有一个只读请求，携带 Cookie/取消信号，不拉批次详情或上传组织', async () => {
   const data = overview(); let calls = 0
   globalThis.fetch = async (url, options) => {
     calls++; assert.equal(url, '/api/dashboard/overview')
     assert.equal(options.method, 'GET'); assert.equal(options.body, undefined)
-    assert.equal(options.headers.Authorization, 'Bearer token-A'); assert.ok(options.signal)
+    assert.equal(options.credentials, 'include'); assert.equal(options.headers.Authorization, undefined); assert.ok(options.signal)
     return new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } })
   }
   assert.deepEqual(await source.getDashboardOverview(), data); assert.equal(calls, 1)
@@ -101,13 +101,13 @@ test('看板失败不伪造零值、不自动重试，切账号丢弃迟到响�
   let calls = 0
   globalThis.fetch = async () => { calls++; return new Response(JSON.stringify({ error: { code: 'FORBIDDEN', message: '无权限' } }), { status: 403 }) }
   await assert.rejects(source.getDashboardOverview(), { code: 'FORBIDDEN' }); assert.equal(calls, 1)
-  assert.equal(storage.getAccessToken(), 'token-A')
+  assert.equal(storage.getAuthUserId(), 'user-A')
   let resolve
   globalThis.fetch = () => new Promise((r) => { resolve = r })
   const waiting = source.getDashboardOverview()
-  storage.setAccessToken('token-B')
+  storage.advanceAuthRevision('user-B')
   resolve(new Response(JSON.stringify(overview())))
-  await assert.rejects(waiting, { name: 'AbortError' }); assert.equal(storage.getAccessToken(), 'token-B')
+  await assert.rejects(waiting, { name: 'AbortError' }); assert.equal(storage.getAuthUserId(), 'user-B')
 })
 
 test('demo 数据源沿用现有样例与覆盖层，不请求真实后端或返回固定统计', async () => {
@@ -154,7 +154,7 @@ test('看板 Hook 按账号/角色/组织隔离缓存，未登录或非管理员
   assert.equal(query.options.retry, false)
   assert.equal(query.options.staleTime, 15_000)
   assert.equal(query.options.refetchOnWindowFocus, true)
-  assert.equal(JSON.stringify(key).includes('token-A'), false)
+  assert.equal(JSON.stringify(key).includes('user-A'), false)
   queryClient.setQueryData(key, overview())
   assert.deepEqual(render(admin).data, overview())
   for (const changed of [{ ...admin, userId: 'admin-B' }, { ...admin, organizationId: 'platform-B' }, { ...admin, role: 'buyer' }]) {

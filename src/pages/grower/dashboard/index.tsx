@@ -76,8 +76,8 @@ export default function GrowerDashboardPage() {
     [mine],
   )
 
-  const handleLogout = () => {
-    logout()
+  const handleLogout = async () => {
+    if (!await logout()) return
     navigate('/login', { replace: true })
   }
 

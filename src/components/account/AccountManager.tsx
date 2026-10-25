@@ -3,7 +3,7 @@ import { Alert, App, Button, Form, Input, Modal, Select, Space, Table, Tag, Typo
 import { useAccounts } from '../../hooks/useAccounts'
 import { BUSINESS_ROLE_LABEL, type BusinessAccount, type BusinessRole, type CreateAccountInput } from '../../types/accounts'
 import AccountIdentityFields from './AccountIdentityFields'
-import { getAccessToken } from '../../utils/auth'
+import { getAuthRevision } from '../../utils/auth'
 
 export default function AccountManager({ onClose }: { onClose: () => void }) {
   const { message, modal } = App.useApp()
@@ -12,14 +12,14 @@ export default function AccountManager({ onClose }: { onClose: () => void }) {
   const [creating, setCreating] = useState(false)
   const [keyword, setKeyword] = useState('')
   const lock = useRef(false)
-  const token = useRef(getAccessToken())
+  const revision = useRef(getAuthRevision())
   const mounted = useRef(true)
   const confirmRef = useRef<ReturnType<typeof modal.confirm> | null>(null)
   useEffect(() => {
     mounted.current = true
     return () => { mounted.current = false; confirmRef.current?.destroy() }
   }, [])
-  const sameIdentity = () => mounted.current && token.current === getAccessToken()
+  const sameIdentity = () => mounted.current && revision.current === getAuthRevision()
   const selectedRole = Form.useWatch('role', form) as BusinessRole | undefined
   const busy = create.isPending || setStatus.isPending
   const ready = query.isSuccess && !query.isFetching && !query.isPaused && !busy

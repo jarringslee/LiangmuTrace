@@ -9,6 +9,7 @@
 - Cloudflare Pages：<https://liangmutrace.pages.dev>
 - 后端 API：<https://liangmu-trace-api.onrender.com/api/health>
 - 当前线上使用 API 模式，连接 Render 后端、Neon PostgreSQL 演示库与 DeepSeek；不与本机开发数据库互通。静态 demo 保留为独立离线兜底。
+- 在线地址对应已发布版本。本地源码使用 HttpOnly Cookie 认证，以本地同源代理运行；当前 Pages → Render 的跨站部署未适配此契约，不能直接按原跨站配置发布并认定登录可用。
 - 已审核档案可匿名访问，例如 [黄精公开溯源](https://liangmutrace.pages.dev/public/trace/YM-TRACE-2026-0015)。完整详情与 AI 需要登录；演示数据不代表真实药材质量认证。
 
 ## 核心业务链路
@@ -41,6 +42,12 @@ AI 聊天支持可移除的批次标签和完整 YM 编号定位。API 模式按
 窄屏或短视口默认收起批次前缀工具，批次标签仍显示，工具可手动展开；聊天记录独立滚动。详情与时间线统一判断附件地址，没有可打开地址的登记记录标为「仅元数据，暂无文件」，不提供占位链接。地址格式检查不证明文件存在，也不替代服务端授权；项目尚未接入对象存储上传。
 
 登录回跳只接受安全且当前角色可进入的已知页面，保留合法目标的查询参数与锚点；其他角色或未知页面回到当前角色工作台。此逻辑只改善导航体验，不替代前端 403 守卫或后端角色、组织与资源权限。
+
+API 登录由后端通过 `Set-Cookie` 签发一小时 JWT，保存在 `HttpOnly; SameSite=Lax; Path=/` Cookie 中，生产环境附加 `Secure`。前端不接收、保存或解码真实 token；登录后再次调用 `/auth/me` 确认 Cookie 生效，刷新也通过此接口恢复身份。普通请求、AI SSE 和 Socket.IO 共用 Cookie，业务权限仍由后端独立检查。HttpOnly 限制脚本读取凭证，不消除 XSS，也不代替 CSRF 防护。[Cookie 属性](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie)
+
+退出等待 `/auth/logout` 清 Cookie，失败提供重试；401/账号失效只清前端状态和私有缓存，不自动调用退出接口。前端以内存身份版本隔离旧请求、旧流与旧连接；同一浏览器配置中的标签页共享登录，通过 BroadcastChannel 通知重新核验，回到页面时也会验证身份。私有请求额外核对期待的用户 ID，该 ID 不能授予身份或权限。登录/退出串行执行，支持原生 Web Locks 时也协调同源标签页。演示管理员和采购商双账号请使用不同浏览器或独立浏览器配置。
+
+未提供 Refresh Token、自动续期、设备管理或服务端 token 吊销；清 Cookie 不会撤销已泄漏的 JWT。demo 仍使用独立的 `sessionStorage` 模拟身份和本地业务数据，不能当作安全鉴权；迁移只清理旧认证键，不清业务样例、用户偏好或数据库 AI 历史。
 
 API 模式提供最小账号开通：在登录页采购商标签下注册，服务端固定采购商角色并创建独立采购组织，成功后返回登录；不能自行加入已有组织。管理员从药材管理页的「账号管理」创建三类业务账号，选择已有启用且类型匹配的组织，或停用/启用账号。停用阻止登录与后续受保护请求，不删除历史批次或消息，也不管理其他管理员。弹窗按需加载，离线 demo 不模拟注册或管理；邮箱未验证，资料编辑、改密和找回密码尚未提供。
 
@@ -146,7 +153,9 @@ npm run dev
 
 只体验前端时，在 `.env.development.local` 设置 `VITE_AUTH_MODE=demo` 后重启 Vite。生产覆盖用 `.env.production.local` 或平台构建环境变量；模式专用文件优先于通用 `.env.local`，进程环境变量优先级最高，不能误认为 `.env.local` 总会覆盖 `.env.production`。[Vite 配置优先级](https://vite.dev/guide/env-and-mode)
 
-接后端时需配置 `VITE_AUTH_MODE=api` 和 HTTPS `VITE_API_BASE_URL=https://liangmu-trace-api.onrender.com/api`；若使用同源 `/api`，必须自行提供真实反向代理，不能仅依赖开发代理。`VITE_*` 会进入浏览器构建产物，禁止填写数据库密码、JWT 密钥或 AI Key。仓库 `.env.production` 保持 demo 默认值，当前 Pages 生产构建由平台环境变量覆盖为 API 模式；修改这些变量必须重新构建，不能只刷新旧页面。
+本地接后端使用 `VITE_AUTH_MODE=api`、`VITE_API_BASE_URL=/api`，统一从 `http://localhost:5173` 打开，不混用 `127.0.0.1`；后端 `CLIENT_ORIGIN=http://localhost:5173`。Vite 同时代理 REST、SSE 和 `/socket.io`，无需新建公网网关。生产运行真实 API 时需另行提供同源代理或同站 HTTPS 地址，并核对 Cookie、来源与长连接；当前 `SameSite=Lax` 不支持原 Pages → Render 跨站直连认证。本项目暂不进行此项公网适配。
+
+`VITE_*` 会进入浏览器构建产物，禁止填写数据库密码、JWT 密钥或 AI Key。仓库 `.env.production` 保持 demo 默认值；托管平台变量可覆盖它，修改变量后必须重新构建，不能只刷新旧页面。
 
 ### 2. 准备 PostgreSQL
 

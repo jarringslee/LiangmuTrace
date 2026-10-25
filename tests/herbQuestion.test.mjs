@@ -32,7 +32,7 @@ beforeEach(async () => {
   queryClient = new QueryClient({ defaultOptions: {
     queries: { retry: false, gcTime: 0 }, mutations: { retry: false, gcTime: 0 },
   } })
-  storage.setAccessToken('token-A')
+  storage.advanceAuthRevision('user-A')
 })
 afterEach(async () => {
   queryClient?.clear()
@@ -47,7 +47,7 @@ test('问答数据源编码路径、只提交问题并携带认证与取消信�
   globalThis.fetch = async (url, options) => {
     assert.equal(url, '/api/batches/batch-test/questions')
     assert.equal(options.method, 'POST')
-    assert.equal(options.headers.Authorization, 'Bearer token-A')
+    assert.equal(options.credentials, 'include'); assert.equal(options.headers.Authorization, undefined)
     assert.deepEqual(JSON.parse(options.body), { question: '当前批次名称？' })
     assert.equal(options.signal.aborted, false)
     return new Response(JSON.stringify({ reply }))
@@ -77,9 +77,9 @@ test('单轮问答上游失败不自动重试、普通业务失败不清除登�
   globalThis.fetch = async () => { calls++; return new Response(JSON.stringify({ error: { code: 'AI_INVALID_RESULT', message: '模型格式错误' } }), { status: 502 }) }
   await assert.rejects(source.askHerbQuestion('batch-test', '当前批次名称？', new AbortController().signal), { code: 'AI_INVALID_RESULT' })
   assert.equal(calls, 1)
-  assert.equal(storage.getAccessToken(), 'token-A')
+  assert.equal(storage.getAuthUserId(), 'user-A')
   globalThis.fetch = async () => {
-    storage.setAccessToken('token-B')
+    storage.advanceAuthRevision('user-B')
     return new Response(JSON.stringify({ reply }))
   }
   await assert.rejects(source.askHerbQuestion('batch-test', '当前批次名称？', new AbortController().signal), { name: 'AbortError' })
@@ -175,7 +175,7 @@ test('问答 Hook 上游失败不自动重跑，finally 释放控制器后允许
   }
   await assert.rejects(hook.ask(reply.question), { code: 'AI_INVALID_RESULT' })
   assert.equal(calls, 1)
-  assert.equal(storage.getAccessToken(), 'token-A')
+  assert.equal(storage.getAuthUserId(), 'user-A')
   assert.deepEqual(await hook.ask(reply.question), reply)
   assert.equal(calls, 2)
 })

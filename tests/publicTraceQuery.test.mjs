@@ -36,7 +36,7 @@ beforeEach(async () => {
     } })
   }
   await setup()
-  storage.setAccessToken('existing-token')
+  storage.advanceAuthRevision('existing-token')
 })
 afterEach(async () => {
   queryClient?.clear(); queryClient = undefined
@@ -52,11 +52,11 @@ test('公开数据源规范化编号，只读公开接口、不带 Token，切�
     calls++; assert.equal(url, `/api/public/trace/${code}`)
     assert.equal(options.method, 'GET'); assert.equal(options.body, undefined)
     assert.equal(options.headers.Authorization, undefined); assert.ok(options.signal)
-    storage.setAccessToken('another-token')
+    storage.advanceAuthRevision('another-token')
     return json({ batch: { ...batch, createdBy: 'private-user', origin: { ...batch.origin, address: 'private-address' } } })
   }
   assert.deepEqual(await source.getPublicTraceByCode(` ${code.toLowerCase()} `), batch)
-  assert.equal(calls, 1); assert.equal(storage.getAccessToken(), 'another-token')
+  assert.equal(calls, 1); assert.equal(storage.getAuthUserId(), 'another-token')
 })
 
 test('仅 404 转 null；认证/限流/服务和网络故障继续抛出、不清登录、不退回 demo', async () => {
@@ -74,7 +74,7 @@ test('仅 404 转 null；认证/限流/服务和网络故障继续抛出、不�
   globalThis.fetch = async () => { calls++; throw new TypeError('network unavailable') }
   await assert.rejects(source.getPublicTraceByCode(code), { code: 'NETWORK_ERROR' })
   assert.equal(calls, 6); assert.equal(authFailures, 0)
-  assert.equal(storage.getAccessToken(), 'existing-token')
+  assert.equal(storage.getAuthUserId(), 'existing-token')
 })
 
 test('非法编号不请求；错误 JSON、响应外壳或编号不匹配不能绕过运行时校验', async () => {
@@ -206,7 +206,7 @@ test('登录过期/退出只清私有缓存，不取消正在读取的匿名档�
   // 先处理可能的拒绝，避免回归失败时出现未处理 rejection。
   const outcome = pending.then((data) => ({ data }), (error) => ({ error }))
   await started
-  auth.logout()
+  auth.invalidateAuth()
   complete()
   const result = await outcome
   assert.equal(signal.aborted, false)
@@ -214,5 +214,5 @@ test('登录过期/退出只清私有缓存，不取消正在读取的匿名档�
   assert.deepEqual(queryClient.getQueryData(key), batch)
   assert.equal(queryClient.getQueryData(['herb-batches', 'api', 'private']), undefined)
   assert.equal(queryClient.getMutationCache().getAll().length, 0)
-  assert.equal(storage.getAccessToken(), null)
+  assert.equal(storage.getAuthUserId(), null)
 })

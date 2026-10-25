@@ -51,8 +51,8 @@ export default function ProfilePage() {
       okText: '退出登录',
       cancelText: '取消',
       okButtonProps: { danger: true },
-      onOk: () => {
-        logout()
+      onOk: async () => {
+        if (!await logout()) return
         navigate('/login', { replace: true })
       },
     })

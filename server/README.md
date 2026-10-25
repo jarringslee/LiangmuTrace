@@ -4,7 +4,7 @@
 
 ## 服务范围
 
-- JWT 登录、角色守卫、组织范围与账号状态校验
+- HttpOnly Cookie 承载 JWT 登录、角色守卫、组织范围与账号状态校验
 - 批次读取、阶段流转、事务溯源事件与版本并发保护
 - 匿名公开溯源白名单
 - DeepSeek 风险分析、RAG 问答与按账号保存的多轮 AI 会话
@@ -49,7 +49,8 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 - `DB_POOL_MAX` 默认 2（整数 1～20），`DB_CONNECT_TIMEOUT_MS` 默认 15000（整数 1000～60000 毫秒）。前者限制当前实例的数据库连接数，后者限制新连接或空闲连接的等待，不是 SQL/事务执行超时；连接池满时排队，不自动重试业务写入。[pg 连接池配置](https://node-postgres.com/apis/pool)
 - `DB_TRANSACTION_TIMEOUT_MS` 默认 15000（整数 1000～60000 毫秒），单独限制交互式事务的执行时间；事务获取等待使用 `DB_CONNECT_TIMEOUT_MS`，不改变原有隔离级别。事务到期仍会取消并回滚，不能用增加超时替代 SQL 优化，也不将模型调用放进事务。[Prisma 事务配置](https://www.prisma.io/docs/orm/v7/prisma-client/queries/transactions)
 - Express 应用显式读取可信代理设置，仅支持 off、loopback 或已核对的 IP/CIDR 列表，拒绝 true/纯跳数/全网 /0。必须另行阻止绕过网关、核对转发头；loopback 不会自动改变服务监听地址。内存限流与广播仍是单实例 MVP，不是全局限流
-- HTTP 仅向配置的前端源给出 CORS 许可；Bearer 不使用跨站 Cookie，预检允许 Authorization/Content-Type、向浏览器暴露 Retry-After。无 Origin 或其他来源仍由 JWT/角色/组织独立鉴权，CORS 不能阻止 CLI 请求。[CORS 原理](https://expressjs.com/en/resources/middleware/cors/)
+- HTTP 仅向配置的前端源给出带凭证的 CORS 许可；允许 Content-Type、X-Liangmu-CSRF、X-Liangmu-User，向浏览器暴露 Retry-After，不再接受 Authorization Bearer 认证。所有 API 写请求额外校验 CSRF，CORS 不代替认证或写入防护。[CORS 原理](https://expressjs.com/en/resources/middleware/cors/)
+- 认证 Cookie 固定 `SameSite=Lax`、主机限定、`Path=/`；生产自动附加 Secure，不增加额外 Cookie 环境变量。本地使用已有 Vite 同源代理；线上需要同源代理或同站 HTTPS，原 Pages → Render 跨站直连不满足此配置，本项目暂不适配或验收该发布路径。
 - Pages 只托管前端；独立 Node HTTPS 后端须支持 `/api`、SSE 无缓冲/不缓存/足够超时以及 `/socket.io` polling/Upgrade。生产代理、数据库 TLS 和微信兼容性需要在实际托管环境核验。
 
 ## 初始化数据库
@@ -144,10 +145,16 @@ npm run prisma:migrate:dev -- --name 迁移名称
 - 不接受客户端传入 `organizationId` 等额外字段。
 - 密码不做 trim；超过 bcrypt 的 72 字节限制直接拒绝。
 
-成功返回 `{ accessToken, tokenType: "Bearer", expiresIn: 3600, user }`。
+成功返回 `{ expiresIn: 3600, user }`，同时设置 `liangmu_session` Cookie：`HttpOnly; SameSite=Lax; Path=/; Max-Age=3600`，生产环境附加 `Secure`，不设置 `Domain`。JSON 不返回 token，浏览器 JavaScript 不能读取认证 Cookie 或 `Set-Cookie`；前端不在 Web Storage 保存真实凭证。
 `user` 包含 `id / username / email / displayName / role / organizationId / organization`，不会返回 `passwordHash`。`organization` 为 `{ id, name, type }` 或 `null`。
 
-`GET /api/auth/me`，请求头使用 `Authorization: Bearer <accessToken>`，成功返回 `{ user }`。Token 只携带用户 ID 等标准声明；每次请求重新读取用户角色、组织和禁用状态，禁用或改角色后旧 Token 也立即遵循新权限。
+`GET /api/auth/me` 使用浏览器携带的 Cookie，成功返回 `{ user }`。前端登录成功后再调用一次，确认 Cookie 被接受；刷新或重新回到页面时通过此接口核实身份，不凭本地角色或残留旧 token 恢复。JWT 仍只携带用户 ID 等标准声明；每次受保护请求重新读取用户角色、组织和禁用状态。重复同名、空值、异常格式和超长认证 Cookie 被拒绝。
+
+`POST /api/auth/logout` 不需要已有有效身份，204 返回空响应并清除同名同路径 Cookie；过期或账号停用也可退出。该接口仍受 CSRF 保护。前端等待成功后才完成退出，网络失败保留重试入口；自动 401/停用提示仅使本地身份失效，不自动清共享 Cookie。
+
+所有 `/api` 下的 POST/PATCH/DELETE 等写请求必须带 `X-Liangmu-CSRF: 1`，包括登录、注册、退出以及无 body 的 SSE。服务器检查 Origin，缺少时检查 Referer，只允许 `CLIENT_ORIGIN`；无来源头的 Node/CLI 仍须自定义头。该固定值不是秘密或认证凭证，它使浏览器跨域发送时必须预检，不能只检查 Cookie 或只依赖 CORS。GET/HEAD/OPTIONS 不执行业务写入。[API 自定义头的 CSRF 防护](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html#employing-custom-request-headers-for-ajaxapi)
+
+浏览器普通私有请求和 SSE 使用 `credentials: 'include'`；登录/退出显式开启凭证，独立公开查询使用 `credentials: 'omit'`。已认证页面附带 `X-Liangmu-User`，服务器只将其与 Cookie 验证出的用户 ID 比较，不把它当作身份。不同返回409 `SESSION_CHANGED`，避免旧标签页面误以另一个账号读写；首次 `/me` 不带期待用户，以发现实际身份。
 
 统一错误格式：`{ error: { code, message, details? } }`。前端以 HTTP 状态和 `error.code` 分支处理，不依赖中文消息内容。
 
@@ -156,6 +163,8 @@ npm run prisma:migrate:dev -- --name 迁移名称
 | 400 | VALIDATION_ERROR / INVALID_JSON | 展示输入错误 |
 | 401 | INVALID_CREDENTIALS / UNAUTHENTICATED / INVALID_TOKEN | 登录失败或清理失效登录态 |
 | 403 | FORBIDDEN / ACCOUNT_DISABLED / ORGANIZATION_DISABLED / INVALID_ORGANIZATION | 提示无权限或账号状态异常 |
+| 403 | CSRF_REJECTED | 请求来源或自定义头不符，不作为登录过期处理 |
+| 409 | SESSION_CHANGED | 旧页面与共享 Cookie 的账号不一致，清本地身份并提示重新验证 |
 | 404 | NOT_FOUND | 请求地址不存在 |
 | 413 | PAYLOAD_TOO_LARGE | 提示请求体过大 |
 | 429 | TOO_MANY_ATTEMPTS | 按 Retry-After 提示稍后重试 |
@@ -167,7 +176,9 @@ npm run prisma:migrate:dev -- --name 迁移名称
 
 测试位于 `tests/auth.test.ts`，使用 Node.js 内置测试器、真实 JWT/bcrypt 和内存用户模拟 HTTP 请求，无需数据库在线。`npm run typecheck` 同时覆盖运行代码、seed 和测试。
 
-MVP 暂不实现 Refresh Token 和服务端登出撤销：客户端退出时删除本地凭证，不会撤销已泄漏的 Token；它仍可能在过期前使用。部署必须使用 HTTPS，JWT 密钥不得传入前端。
+MVP 暂不实现 Refresh Token、自动续期、服务端 Session 表或 token 吊销列表：退出由后端清除浏览器 Cookie，已泄漏的 JWT 仍可能在过期前被重放。HttpOnly 限制脚本读取凭证，不能阻止 XSS 利用当前会话发送请求。JWT 密钥只在后端；本地 HTTP 开发不附加 Secure，生产必须 HTTPS。
+
+前端以递增的内存身份版本隔离旧请求、旧401、SSE帧和异步缓存写入，不把凭证本身用作页面标记。登录和退出串行等待；Chrome/Edge 支持 Web Locks 时，同源标签页也协调 Cookie 写操作。BroadcastChannel 只广播重新核验提示，焦点/可见性恢复时补查 `/me`；这些机制不是数据库会话撤销或已在途业务的全局锁。同一浏览器配置的普通标签页共享账号，双账号演示使用不同浏览器或独立配置。[Web Locks](https://developer.mozilla.org/en-US/docs/Web/API/LockManager/request)、[BroadcastChannel](https://developer.mozilla.org/en-US/docs/Web/API/Broadcast_Channel_API)
 
 ## 最小注册与业务账号管理
 
@@ -194,7 +205,7 @@ MVP 暂不实现 Refresh Token 和服务端登出撤销：客户端退出时删�
 
 ## 批次接口
 
-本节 `/api/batches` 接口均要求 `Authorization: Bearer <accessToken>`，并设置 `Cache-Control: no-store`；上面的独立公开接口不是完整详情的免鉴权版本。
+本节 `/api/batches` 接口均要求有效认证 Cookie，写操作还要求 CSRF 头与来源检查，并设置 `Cache-Control: no-store`；上面的独立公开接口不是完整详情的免鉴权版本。
 
 读取接口：
 
@@ -298,10 +309,10 @@ v2 的 `evidence` 增加可选 `sourceText`，由服务端按本轮固定快照�
 - `PATCH /api/notifications/:id/read` 接受空对象，返回 `{ item }`；四角色都只能标记本人消息，未知或其他收件人的 ID 统一返回 404。条件更新确保并发/重复点击不覆盖首次 readAt；通知内部 metadata/recipientId 不进入 DTO。通知路由响应设置 `Cache-Control: no-store`，避免私人数据被 HTTP 缓存保存
 - 建档、首条事件与有效管理员的 batchSubmitted 通知在同一事务中写入；审核结果写给批次所属种植组织，审核通过的采收完成批次写给所有可接单有效加工商，加工完成进入仓储写给有效管理员
 - 审核、采收、加工入库的批次状态/审核记录/事件和通知均在同一事务提交；允许先采收后审核，因此审核通过已采收批次时也会补发加工接收通知。事务完成后才发布提示，没有有效收件人时不创建空消息
-- Express 与 Socket.IO 共用 HTTP Server；客户端使用 `/socket.io`，handshake.auth 仅接受 `{ token }`，JWT 验证与数据库 currentUser 检查独立于前端路由。服务端决定用户房间，不开放任意 join 指令；Origin 限定 CLIENT_ORIGIN，无 Origin 的 CLI 也必须有合法 JWT
+- Express 与 Socket.IO 共用 HTTP Server；客户端使用 `/socket.io` 与 `withCredentials: true`，从握手 Cookie 验证 JWT 和数据库 currentUser。handshake.auth 只允许可选 `{ userId }` 核对当前页面期待的用户，ID 不符拒绝连接；不接受 token、收件人或任意 join 指令。服务端决定用户房间，Origin 限定 CLIENT_ORIGIN，无 Origin 的 CLI 也必须有合法 Cookie。Cookie 的 `Path=/` 同时覆盖 REST 和实时路径
 - `notifications:changed` 只提醒前端缓存失效，不携带通知正文。JWT 到期主动断开；长连接每 30 秒检查账号、组织与角色变化，变化时发送 session:invalid 并断开（不是每帧实时检查）。每个 REST 请求仍独立认证
 - 服务为单实例内存广播，没有 Redis adapter、outbox、持久化事件重放或必达保证。提示失败不撤销已提交业务；前端必须在连接/重连时查询 PostgreSQL 补齐，消息表是唯一持久化来源。参考 [Socket.IO 交付保证](https://socket.io/docs/v4/delivery-guarantees/)
-- 前端数据源、Query Hook、App 全局订阅、消息中心与铃铛向四角色开放；账号缓存包含模式和用户 ID。首次连接/重连触发 REST 补查，旧连接通过 active 与 Token 检查丢弃回调，卸载移除监听并断开连接；铃铛合计业务通知与人工聊天未读数
+- 前端数据源、Query Hook、App 全局订阅、消息中心与铃铛向四角色开放；账号缓存包含模式和用户 ID。首次连接/重连触发 REST 补查，旧连接通过 active 与内存身份版本检查丢弃回调，卸载移除监听并断开连接；铃铛合计业务通知与人工聊天未读数
 - 人工聊天使用独立的会话接口；通知尚不覆盖质检/出库/收货或采购商关注关系。当前演示使用单实例 HTTP/WebSocket 服务，多实例共享广播和可靠投递仍未实现。
 
 ## 人工聊天 REST 与实时提示
@@ -326,7 +337,7 @@ v2 的 `evidence` 增加可选 `sourceText`，由服务端按本轮固定快照�
 
 普通聊天与 RAG 最终仍要求完整 JSON，并独立校验结构和引用；Markdown 只改变 `answer` 字符串的排版，不放宽校验。前端使用元素白名单、禁用原始 HTML 和模型链接/图片，真实来源单独展示。会话流式接口从 DeepSeek `stream:true` 接收正文增量，解码 JSON 的 `answer` 字符串并隐藏未校验的引用 ID；首段立即发，后续合并约24字再发，降低逐token身份/权限复核的数据库开销，不设置打字机延时，不输出推理链。
 
-- `POST /api/assistant/chat` 请求 `{ question: string }`，去首尾空格后 2～500 字符，严格拒绝额外字段；四角色均需 Bearer 认证。响应 `{ reply: { id, scope: 'general', batchId: null, question, status, answer, citations: [], mode: 'api', modelName, createdAt } }`
+- `POST /api/assistant/chat` 请求 `{ question: string }`，去首尾空格后 2～500 字符，严格拒绝额外字段；四角色均需 Cookie 认证和 CSRF 检查。响应 `{ reply: { id, scope: 'general', batchId: null, question, status, answer, citations: [], mode: 'api', modelName, createdAt } }`
 - 只把系统说明与本轮问题交给 DeepSeek，要求 JSON 输出并用 Zod 校验，拒绝工具调用与额外生成字段。没有数据库读工具、检索、历史或医学能力，不冒充批次事实问答；医疗关键词拒答不产生模型费用，其他普通回复无 RAG 来源
 - 接口每用户每分钟 10 次（普通聊天与旧批次问答分别计数）、该服务单用户同时一轮、55 秒超时，客户端断开向上游传递取消；取消不保证退还已产生费用。服务为单实例，限流/并发保护没有多实例共享
 - `Cache-Control: no-store`；返回前重新读取当前用户，账号/组织停用或角色/组织变化不能返回旧身份结果。批次权限由原问答服务独立检查
@@ -350,7 +361,7 @@ v2 的 `evidence` 增加可选 `sourceText`，由服务端按本轮固定快照�
 
 ### 手动真实 AI 烟测
 
-`scripts/check-assistant-demo.mjs` 是独立 HTTP 验收脚本，不随 `npm test` 执行。它需要已启动的 API、有效采购商账号和当前可见的甘草/黄精样例，不自动 seed，也不读取或输出 DeepSeek Key、Token、数据库连接串。
+`scripts/check-assistant-demo.mjs` 是独立 HTTP 验收脚本，不随 `npm test` 执行。它需要已启动的 API、有效采购商账号和当前可见的甘草/黄精样例，不自动 seed，也不读取或输出 DeepSeek Key、Token、数据库连接串。Node 不自动维护浏览器 Cookie，该脚本只在进程内从登录 Set-Cookie 提取认证 Cookie，后续显式发送 Cookie 与 CSRF 头，不落盘或输出凭证；服务器调用 DeepSeek 使用的 Authorization Key 与浏览器登录凭证无关。
 
 在 `server` 目录运行（账号按实际环境替换）：
 
@@ -378,6 +389,8 @@ Remove-Item Env:AI_SMOKE_PASSWORD
 前端开发服务器将 `/api` 和 `/socket.io` 代理到本服务；Cloudflare Pages 的静态 demo 不会部署 Node 后端。真实 API 模式需要独立 HTTPS Node 服务、可访问的 PostgreSQL、后端私密变量，以及 SSE/Socket 网关配置。
 
 当前演示后端为 `https://liangmu-trace-api.onrender.com`，由 Render 新加坡单实例连接 Neon 演示库。根路径 `/` 没有首页，返回 JSON 404 正常；按需调用 `/api/health` 检查数据库连接，私有业务与 AI 接口需要真实 JWT。
+
+上述地址属于已发布环境。本地源码的 Cookie 契约以 Vite 同源代理运行，不把旧版本公网结果当作此版本验收；当前 Pages → Render 跨站直连未适配 `SameSite=Lax`，本项目暂不增加公网网关或进行新版公网兼容验收。
 
 服务使用单实例内存限流和实时广播，没有多实例共享限流或 Redis adapter。当前演示链路支持公网 HTTP、四角色建档到收货、核心业务通知、AI 问答、风险 SSE 与双账号人工消息提示；不能据此保证所有网络场景或推送必达。角色登录回跳修复与风险抽屉关闭/重开已通过公网页面核验，微信/移动真机另验。取消只影响未完成请求，不能回滚已经保存的建议或保证退回模型计费。`TRUST_PROXY` 暂为 `off`，不能宣称已按真实客户端 IP 正确区分代理后的 IP 限流。
 

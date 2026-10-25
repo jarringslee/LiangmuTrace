@@ -24,7 +24,7 @@ beforeEach(async () => {
     optimizeDeps: { noDiscovery: true, include: [] }, logLevel: 'silent' })
   contract = await vite.ssrLoadModule('/src/services/chatContract.ts')
   source = await vite.ssrLoadModule('/src/services/chatDataSource.ts')
-  storage = await vite.ssrLoadModule('/src/utils/auth.ts'); storage.setAccessToken('token-A')
+  storage = await vite.ssrLoadModule('/src/utils/auth.ts'); storage.advanceAuthRevision('user-A')
 })
 afterEach(async () => {
   await vite.close(); globalThis.fetch = realFetch
@@ -58,9 +58,9 @@ test('发送响应必须匹配会话、UUID 和原文，已读响应匹配请求
   assert.throws(() => contract.parseChatSent({ item: message }, 'chat-1', uuid, '其他内容'), { code: 'INVALID_RESPONSE' })
   assert.throws(() => contract.parseChatRead({ conversationId: 'other' }, 'chat-1'), { code: 'INVALID_RESPONSE' })
 })
-test('数据源正确编码联系人搜索、携带 JWT，只提交收件人而非发送人', async () => {
+test('数据源正确编码联系人搜索、携带 Cookie，只提交收件人而非发送人', async () => {
   globalThis.fetch = async (url, options) => {
-    assert.equal(url, '/api/chat/contacts?search=%E5%B9%B3%E5%8F%B0'); assert.equal(options.headers.Authorization, 'Bearer token-A')
+    assert.equal(url, '/api/chat/contacts?search=%E5%B9%B3%E5%8F%B0'); assert.equal(options.credentials, 'include'); assert.equal(options.headers.Authorization, undefined)
     return new Response(JSON.stringify({ items: [contact], hasMore: false }))
   }
   assert.equal((await source.listChatContacts('平台')).items.length, 1)
@@ -95,7 +95,7 @@ test('历史路径/游标、发送 UUID 与已读位置通过统一请求层，�
 })
 test('切账号后丢弃旧聊天响应，权限错误保持结构化状态', async () => {
   globalThis.fetch = async () => {
-    storage.setAccessToken('token-B'); return new Response(JSON.stringify(conversations))
+    storage.advanceAuthRevision('user-B'); return new Response(JSON.stringify(conversations))
   }
   await assert.rejects(source.listChatConversations(), { name: 'AbortError' })
   globalThis.fetch = async () => new Response(JSON.stringify({ error: { code: 'CHAT_NOT_FOUND', message: '无法访问' } }), { status: 404 })

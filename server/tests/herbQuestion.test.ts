@@ -1,3 +1,4 @@
+import { sessionHeaders } from './helpers/session.js'
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import { test } from 'node:test'
@@ -264,7 +265,7 @@ test('HTTP 支持四角色认证、严格输入和每用户限流，不误拦截
   await once(server, 'listening')
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/batches/batch-test`
   const send = (token?: string, body: unknown = { question: '本批次登记产地？' }) => fetch(`${base}/questions`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...sessionHeaders(token) },
     body: JSON.stringify(body),
   })
   try {

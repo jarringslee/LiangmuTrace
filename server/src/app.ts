@@ -5,6 +5,7 @@
 import cors from 'cors'
 import express from 'express'
 import { env } from './config/env.js'
+import { CSRF_HEADER_NAME, protectCookieWrites } from './middleware/csrf.js'
 // 健康检查路由
 import { healthRouter } from './routes/health.js'
 // 认证模块路由工厂
@@ -63,14 +64,18 @@ export function createApp(
   app.set('trust proxy', env.TRUST_PROXY)
 
   // CORS 只决定浏览器能否读取响应，不替代 JWT/角色/组织鉴权。
-  // 项目使用 Authorization: Bearer，不依赖跨站 Cookie。
+  // Cookie 自动随请求发送；写操作另由 CSRF 中间件检查，不能只依赖 CORS。
   app.use(
     cors({
       origin: (origin, done) => done(null, !origin || origin === env.CLIENT_ORIGIN),
-      allowedHeaders: ['Authorization', 'Content-Type'],
+      credentials: true,
+      allowedHeaders: ['Content-Type', CSRF_HEADER_NAME, 'X-Liangmu-User'],
       exposedHeaders: ['Retry-After'],
     }),
   )
+
+  // 覆盖登录、退出、注册及所有业务写入，包括没有请求体的 POST SSE。
+  app.use('/api', protectCookieWrites)
 
   // 解析请求体为json，限制最大请求体大小2MB，防止超大请求攻击
   app.use(express.json({ limit: '2mb' }))

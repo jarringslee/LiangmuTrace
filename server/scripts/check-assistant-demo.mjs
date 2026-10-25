@@ -24,28 +24,34 @@ assert.ok(password, '请设置 AI_SMOKE_PASSWORD，不将密码写入脚本或�
 const api = base.href.replace(/\/$/, '')
 const publicSuite = args.includes('--public-suite')
 const streaming = args.includes('--stream')
-let token
+let sessionCookie
 async function request(path, body) {
   const response = await fetch(api + path, {
     method: body ? 'POST' : 'GET',
-    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    headers: { ...(sessionCookie ? { Cookie: sessionCookie } : {}),
+      ...(body ? { 'X-Liangmu-CSRF': '1' } : {}),
       ...(body ? { 'Content-Type': 'application/json' } : {}) },
     ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(75_000),
   })
   const result = await response.json()
   if (!response.ok) throw Object.assign(new Error(`HTTP ${response.status}: ${result.error?.code ?? 'UNKNOWN'}`),
     { status: response.status, code: result.error?.code })
+  if (path === '/auth/login') {
+    const cookie = response.headers.getSetCookie().find(value => value.startsWith('liangmu_session='))
+    assert.ok(cookie, '登录缺少认证 Cookie')
+    sessionCookie = cookie.split(';')[0] // Node 脚本显式管理；浏览器业务代码不能读取 HttpOnly Cookie。
+  }
   return result
 }
 const login = async () => {
   const result = await request('/auth/login', { account: option('--account', 'chenjingxuan'), password, role: 'buyer' })
-  assert.ok(result.accessToken)
-  token = result.accessToken // 只留在进程内，不输出、不写文件。
+  assert.ok(result.user)
+  assert.equal('accessToken' in result, false)
 }
 const cases = []
 async function streamRequest(input) {
   const response = await fetch(api + '/assistant/conversation/messages/stream', {
-    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    method: 'POST', headers: { Cookie: sessionCookie, 'X-Liangmu-CSRF': '1', 'Content-Type': 'application/json' },
     body: JSON.stringify(input), signal: AbortSignal.timeout(75_000),
   })
   if (!response.ok) {

@@ -75,8 +75,8 @@ export default function ProcessorDashboardPage() {
     [processable],
   )
 
-  const handleLogout = () => {
-    logout()
+  const handleLogout = async () => {
+    if (!await logout()) return
     navigate('/login', { replace: true })
   }
 

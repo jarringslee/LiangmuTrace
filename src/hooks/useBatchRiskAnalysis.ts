@@ -15,7 +15,7 @@ import type {
     RiskProgress,
     RiskReviewInput,
 } from '../types/riskAnalysis'
-import { getAccessToken } from '../utils/auth'
+import { getAuthRevision } from '../utils/auth'
 import { herbQueryKeys } from './useHerbBatches'
 
 const riskQueryKey = (batchId: string) =>
@@ -23,7 +23,7 @@ const riskQueryKey = (batchId: string) =>
 
 type AnalysisRun = {
     controller: AbortController
-    token: string | null
+    revision: number
 }
 
 export function useBatchRiskAnalysis(batchId: string) {
@@ -75,7 +75,7 @@ export function useBatchRiskAnalysis(batchId: string) {
             if (
                 !mountedRef.current ||
                 run.controller.signal.aborted ||
-                run.token !== getAccessToken()
+                run.revision !== getAuthRevision()
             ) return
 
             // 防止旧读取迟到后覆盖新建议。
@@ -85,7 +85,7 @@ export function useBatchRiskAnalysis(batchId: string) {
             if (
                 !mountedRef.current ||
                 run.controller.signal.aborted ||
-                run.token !== getAccessToken()
+                run.revision !== getAuthRevision()
             ) return
 
             queryClient.setQueryData(queryKey, analysis)
@@ -100,7 +100,7 @@ export function useBatchRiskAnalysis(batchId: string) {
 
             if (
                 !mountedRef.current ||
-                run.token !== getAccessToken()
+                run.revision !== getAuthRevision()
             ) return
 
             // 身份变化产生的取消，不为新身份恢复旧任务。
@@ -150,7 +150,7 @@ export function useBatchRiskAnalysis(batchId: string) {
         const controller = new AbortController()
         const run: AnalysisRun = {
             controller,
-            token: getAccessToken(),
+            revision: getAuthRevision(),
         }
 
         controllerRef.current = controller

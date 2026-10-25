@@ -34,178 +34,216 @@ async function setup(mode = 'development') {
   queryClient = (await vite.ssrLoadModule('/src/services/queryClient.ts')).queryClient
   queryClient.setDefaultOptions({ queries: { retry: false, gcTime: 0 }, mutations: { gcTime: 0 } })
 }
+
+const oldLocalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r }); return { promise, resolve } }
 beforeEach(async () => {
-  const values = new Map()
-  Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, value: {
-    getItem: (key) => values.get(key) ?? null,
-    setItem: (key, value) => values.set(key, value),
-    removeItem: (key) => values.delete(key),
-  } })
+  for (const name of ['sessionStorage', 'localStorage']) {
+    const values = new Map()
+    Object.defineProperty(globalThis, name, { configurable: true, value: {
+      getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key),
+    } })
+  }
   await setup()
 })
 afterEach(async () => {
-  auth.logout()
+  auth.invalidateAuth()
+  queryClient.clear()
   await vite.close()
   globalThis.fetch = realFetch
-  if (oldStorage) Object.defineProperty(globalThis, 'sessionStorage', oldStorage)
-  else delete globalThis.sessionStorage
+  for (const [name, descriptor] of [['sessionStorage', oldStorage], ['localStorage', oldLocalStorage]]) {
+    if (descriptor) Object.defineProperty(globalThis, name, descriptor); else delete globalThis[name]
+  }
 })
-async function loginAs(role = 'admin', token = `token-${role}`) {
-  globalThis.fetch = async () => json({ accessToken: token, user: user(role) })
+async function loginAs(role = 'admin') {
+  globalThis.fetch = async () => json({ expiresIn: 3600, user: user(role) })
   return auth.login({ ...credentials, role })
 }
 
-test('API 登录只保存 Token，角色/组织映射到现有页面字段', async () => {
-  let request
+test('Cookie 登录后再用 /me 核实身份，不读取或写入 token，Storage 禁用仍能登录', async () => {
+  const calls = []
+  sessionStorage.setItem = localStorage.setItem = () => { throw new Error('blocked') }
   globalThis.fetch = async (url, options) => {
-    request = { url, options }
-    return json({ accessToken: 'new-token', user: user('grower') })
+    calls.push(url)
+    assert.equal(options.credentials, 'include')
+    assert.equal(options.headers.Authorization, undefined)
+    if (url.endsWith('/login')) assert.equal(options.headers['X-Liangmu-CSRF'], '1')
+    return json({ user: user('grower'), expiresIn: 3600 })
   }
   const session = await auth.login({ ...credentials, role: 'grower' })
-  assert.equal(request.url, '/api/auth/login')
-  assert.equal(request.options.headers.Authorization, undefined)
-  assert.equal(session.username, 'grower')
+  assert.deepEqual(calls, ['/api/auth/login', '/api/auth/me'])
   assert.equal(session.growerId, 'org-grower')
   assert.equal(session.organizationName, '测试组织')
-  assert.equal(storage.getAccessToken(), 'new-token')
-  assert.equal(storage.getAuthSession(), null)
   assert.equal(auth.getAuthSnapshot().status, 'authenticated')
+  assert.equal(storage.getAuthUserId(), 'user-grower')
+  assert.equal(storage.getAuthSession(), null)
+  assert.equal(storage.getAccessToken, undefined)
 })
 
-test('刷新时先 checking，/me 成功才认证；重复恢复只请求一次', async () => {
-  storage.setAccessToken('stored-token')
-  let resolveResponse, count = 0
-  globalThis.fetch = (_url, options) => {
-    count++
-    assert.equal(options.headers.Authorization, 'Bearer stored-token')
-    return new Promise((resolve) => { resolveResponse = resolve })
-  }
-  const first = auth.restoreAuth()
-  const second = auth.restoreAuth()
-  assert.equal(first, second)
+test('登录响应成功但浏览器未接受 Cookie 时，不能显示登录成功', async () => {
+  globalThis.fetch = async url => url.endsWith('/login') ? json({ user: user() }) : failure(401, 'UNAUTHENTICATED')
+  await assert.rejects(auth.login(credentials), { status: 401 })
+  assert.equal(auth.getAuthSnapshot().status, 'error')
   assert.equal(auth.getAuthSnapshot().session, null)
-  resolveResponse(json({ user: user('processor') }))
-  await first
-  assert.equal(count, 1)
+})
+
+test('刷新无需探测本地 token；checking 期间重复 /me 恢复只发一次', async () => {
+  const result = deferred(); let calls = 0
+  globalThis.fetch = (url, options) => { calls++; assert.equal(url, '/api/auth/me'); assert.equal(options.credentials, 'include'); return result.promise }
+  const first = auth.restoreAuth(), second = auth.restoreAuth()
+  assert.equal(first, second)
+  assert.equal(auth.getAuthSnapshot().status, 'checking')
+  result.resolve(json({ user: user('processor') })); await first
+  assert.equal(calls, 1)
   assert.equal(auth.getAuthSnapshot().session.processorId, 'org-processor')
 })
 
-test('API 模式不会信任旧 Mock 登录资料', async () => {
-  sessionStorage.setItem('liangmu_auth', JSON.stringify({ role: 'admin' }))
-  globalThis.fetch = () => { throw new Error('不应请求') }
+test('清理两个 Storage 的旧登录键，不信任残留 Mock 用户，正常未登录不显示错误', async () => {
+  for (const store of [sessionStorage, localStorage]) {
+    for (const key of ['liangmu_auth', 'liangmu_api_token_v1', 'liangmu_demo_auth_v2']) store.setItem(key, 'old-private-value')
+    store.setItem('unrelated-preference', 'keep')
+  }
+  globalThis.fetch = async () => failure(401, 'UNAUTHENTICATED')
   await auth.restoreAuth()
-  assert.equal(auth.getAuthSnapshot().status, 'anonymous')
-})
-
-test('401 清除登录和缓存，登录接口的 401 只作为表单错误', async () => {
-  await loginAs()
-  queryClient.setQueryData(['private'], ['old-user-data'])
-  globalThis.fetch = async () => failure(401, 'INVALID_CREDENTIALS')
-  await assert.rejects(api.apiRequest('/auth/login', { auth: false }), { status: 401 })
-  assert.equal(auth.getAuthSnapshot().status, 'authenticated')
-  await assert.rejects(api.apiRequest('/auth/me'), { status: 401 })
-  assert.equal(auth.getAuthSnapshot().status, 'anonymous')
-  assert.equal(storage.getAccessToken(), null)
-  assert.equal(queryClient.getQueryData(['private']), undefined)
-})
-
-test('普通 403 保留登录，账号被禁用的 403 清理登录', async () => {
-  await loginAs()
-  globalThis.fetch = async () => failure(403, 'FORBIDDEN')
-  await assert.rejects(api.apiRequest('/restricted'), { status: 403 })
-  assert.equal(auth.getAuthSnapshot().status, 'authenticated')
-  globalThis.fetch = async () => failure(403, 'ACCOUNT_DISABLED')
-  await assert.rejects(api.apiRequest('/auth/me'), { status: 403 })
-  assert.equal(auth.getAuthSnapshot().status, 'anonymous')
-})
-
-test('网络错误保留 Token 和恢复入口，重试成功后登录', async () => {
-  storage.setAccessToken('stored')
-  globalThis.fetch = async () => { throw new TypeError('offline') }
-  await auth.restoreAuth()
-  assert.equal(auth.getAuthSnapshot().status, 'error')
-  assert.equal(storage.getAccessToken(), 'stored')
-  globalThis.fetch = async () => json({ user: user() })
-  await auth.restoreAuth()
-  assert.equal(auth.getAuthSnapshot().status, 'authenticated')
-})
-
-test('恢复期间退出，迟到的 /me 不能重新登录', async () => {
-  storage.setAccessToken('stored')
-  let resolveResponse
-  globalThis.fetch = () => new Promise((resolve) => { resolveResponse = resolve })
-  const pending = auth.restoreAuth()
-  auth.logout()
-  resolveResponse(json({ user: user() }))
-  await pending
-  assert.equal(auth.getAuthSnapshot().status, 'anonymous')
-})
-
-test('登录期间退出，迟到的成功响应不能覆盖退出状态', async () => {
-  let resolveResponse
-  globalThis.fetch = () => new Promise((resolve) => { resolveResponse = resolve })
-  const pending = auth.login(credentials)
-  auth.logout()
-  resolveResponse(json({ accessToken: 'late', user: user() }))
-  await assert.rejects(pending, { name: 'AbortError' })
-  assert.equal(storage.getAccessToken(), null)
-})
-
-test('切账号后旧 401 不能踢出新账号，旧成功响应也被丢弃', async () => {
-  for (const response of [failure(401, 'INVALID_TOKEN'), json({ data: 'old' })]) {
-    await loginAs('admin', 'token-A')
-    let resolveResponse
-    globalThis.fetch = () => new Promise((resolve) => { resolveResponse = resolve })
-    const oldRequest = api.apiRequest('/private')
-    auth.logout()
-    await loginAs('buyer', 'token-B')
-    resolveResponse(response)
-    await assert.rejects(oldRequest, { name: 'AbortError' })
-    assert.equal(auth.getAuthSnapshot().session.role, 'buyer')
-    assert.equal(storage.getAccessToken(), 'token-B')
+  assert.equal(auth.getAuthSnapshot().status, 'anonymous'); assert.equal(auth.getAuthSnapshot().message, null)
+  for (const store of [sessionStorage, localStorage]) {
+    assert.equal(store.getItem('liangmu_api_token_v1'), null); assert.equal(store.getItem('liangmu_auth'), null)
+    assert.equal(store.getItem('unrelated-preference'), 'keep')
   }
 })
 
-test('退出清除查询和 mutation 缓存，迟到查询不重新填入缓存', async () => {
-  await loginAs()
-  let resolveQuery
-  const pending = queryClient.fetchQuery({ queryKey: ['pending'], queryFn: () => new Promise((resolve) => { resolveQuery = resolve }) })
-  const observed = pending.catch(() => undefined)
-  queryClient.getMutationCache().build(queryClient, { mutationKey: ['old'] })
-  auth.logout()
-  resolveQuery('old-account')
-  await observed
-  assert.equal(queryClient.getQueryCache().getAll().length, 0)
-  assert.equal(queryClient.getMutationCache().getAll().length, 0)
+test('401 只清本地登录和私有缓存，不发送退出请求；登录错误不清其他登录状态', async () => {
+  await loginAs(); queryClient.setQueryData(['private'], 'old')
+  const calls = []
+  globalThis.fetch = async url => { calls.push(url); return failure(401, 'INVALID_TOKEN') }
+  await assert.rejects(api.apiRequest('/auth/login', { auth: false }), { status: 401 })
+  assert.equal(auth.getAuthSnapshot().status, 'authenticated')
+  await assert.rejects(api.apiRequest('/private'), { status: 401 })
+  assert.equal(auth.getAuthSnapshot().status, 'anonymous'); assert.equal(storage.getAuthUserId(), null)
+  assert.equal(queryClient.getQueryData(['private']), undefined)
+  assert.deepEqual(calls, ['/api/auth/login', '/api/private'])
 })
 
-test('429 保留 Retry-After；无效 JSON、调用方取消和超时能区分', async (context) => {
-  globalThis.fetch = async () => json({ error: { code: 'TOO_MANY_ATTEMPTS', message: '请稍后重试' } }, 429, { 'Retry-After': '60' })
-  await assert.rejects(api.apiRequest('/auth/login', { auth: false }), { status: 429, retryAfter: '60' })
+test('业务/CSRF 的403保留登录；账号停用和共享Cookie身份不匹配时失效', async () => {
+  for (const code of ['FORBIDDEN', 'CSRF_REJECTED']) {
+    await loginAs(); globalThis.fetch = async () => failure(403, code)
+    await assert.rejects(api.apiRequest('/private'), { code }); assert.equal(auth.getAuthSnapshot().status, 'authenticated')
+  }
+  for (const [status, code] of [[403, 'ACCOUNT_DISABLED'], [409, 'SESSION_CHANGED']]) {
+    await loginAs(); globalThis.fetch = async () => failure(status, code)
+    await assert.rejects(api.apiRequest('/private'), { code }); assert.equal(auth.getAuthSnapshot().status, 'anonymous')
+  }
+})
+
+test('恢复遇到网络错误保留验证入口，重试 /me 可以恢复', async () => {
+  globalThis.fetch = async () => { throw new TypeError('offline') }
+  await auth.restoreAuth(); assert.equal(auth.getAuthSnapshot().status, 'error')
+  globalThis.fetch = async () => json({ user: user() })
+  await auth.restoreAuth(); assert.equal(auth.getAuthSnapshot().status, 'authenticated')
+})
+
+test('恢复期间退出，迟到的 /me 不能重新登录', async () => {
+  const old = deferred()
+  globalThis.fetch = url => url.endsWith('/logout') ? Promise.resolve(new Response(null, { status: 204 })) : old.promise
+  const pending = auth.restoreAuth(), exiting = auth.logout()
+  old.resolve(json({ user: user() })); await pending
+  assert.equal(await exiting, true); assert.equal(auth.getAuthSnapshot().status, 'anonymous')
+})
+
+test('已发出的登录先收尾，再执行退出；迟到 Set-Cookie 不覆盖退出', async () => {
+  const entered = deferred(), old = deferred(), calls = []
+  globalThis.fetch = (url, options) => {
+    calls.push(url); assert.equal(options.credentials, 'include')
+    if (url.endsWith('/login')) { entered.resolve(); return old.promise }
+    return Promise.resolve(new Response(null, { status: 204 }))
+  }
+  const pending = auth.login(credentials), observed = assert.rejects(pending, { name: 'AbortError' })
+  await entered.promise
+  const exiting = auth.logout(); assert.equal(auth.getAuthSnapshot().status, 'checking')
+  assert.deepEqual(calls, ['/api/auth/login'])
+  old.resolve(json({ user: user() })); await observed
+  assert.equal(await exiting, true)
+  assert.deepEqual(calls, ['/api/auth/login', '/api/auth/logout'])
+  assert.equal(auth.getAuthSnapshot().status, 'anonymous')
+})
+
+test('退出失败不假装成功，支持重试清 Cookie，退出请求无需现有身份', async () => {
+  await loginAs(); queryClient.setQueryData(['private'], 'old')
+  globalThis.fetch = async () => { throw new TypeError('offline') }
+  assert.equal(await auth.logout(), false)
+  assert.equal(auth.getAuthSnapshot().errorAction, 'logout')
+  assert.equal(queryClient.getQueryData(['private']), undefined)
+  globalThis.fetch = async (url, options) => {
+    assert.equal(url, '/api/auth/logout'); assert.equal(options.credentials, 'include')
+    assert.equal(options.headers['X-Liangmu-CSRF'], '1')
+    return new Response(null, { status: 204 })
+  }
+  assert.equal(await auth.logout(), true); assert.equal(auth.getAuthSnapshot().status, 'anonymous')
+})
+
+test('切账号后旧401与旧成功响应均丢弃，同账号重登也产生新身份版本', async () => {
+  for (const response of [failure(401, 'INVALID_TOKEN'), json({ data: 'old' })]) {
+    await loginAs(); const old = deferred(); globalThis.fetch = () => old.promise
+    const pending = api.apiRequest('/private')
+    await loginAs('buyer'); old.resolve(response)
+    await assert.rejects(pending, { name: 'AbortError' })
+    assert.equal(auth.getAuthSnapshot().session.role, 'buyer')
+  }
+  const before = storage.getAuthRevision(); await loginAs('buyer')
+  assert.ok(storage.getAuthRevision() > before)
+})
+
+test('私有请求发送期待的用户ID；公开请求不携带Cookie或身份，写请求即使无body也带CSRF头', async () => {
+  await loginAs()
+  globalThis.fetch = async (_url, options) => {
+    if (options.credentials === 'omit') assert.equal(options.headers['X-Liangmu-User'], undefined)
+    else assert.equal(options.headers['X-Liangmu-User'], 'user-admin')
+    if (options.method === 'POST') assert.equal(options.headers['X-Liangmu-CSRF'], '1')
+    return json({ ok: true })
+  }
+  await api.apiRequest('/private'); await api.apiRequest('/public', { auth: false })
+  await api.apiRequest('/write', { method: 'POST' })
+})
+
+test('本地身份失效清空查询及mutation缓存，迟到查询不能重新填入', async () => {
+  await loginAs(); const old = deferred()
+  const pending = queryClient.fetchQuery({ queryKey: ['private'], queryFn: () => old.promise }).catch(() => undefined)
+  queryClient.getMutationCache().build(queryClient, { mutationKey: ['old'] })
+  auth.invalidateAuth(); old.resolve('old'); await pending
+  assert.equal(queryClient.getQueryCache().getAll().length, 0); assert.equal(queryClient.getMutationCache().getAll().length, 0)
+})
+
+test('429保留Retry-After；无效JSON、取消和超时能够区分', async context => {
+  globalThis.fetch = async () => json({ error: { code: 'LIMITED', message: '稍后重试' } }, 429, { 'Retry-After': '60' })
+  await assert.rejects(api.apiRequest('/public', { auth: false }), { status: 429, retryAfter: '60' })
   globalThis.fetch = async () => new Response('<html>wrong upstream</html>')
-  await assert.rejects(api.apiRequest('/auth/login', { auth: false }), { code: 'INVALID_RESPONSE' })
-  const controller = new AbortController()
-  controller.abort()
-  globalThis.fetch = async (_url, options) => { options.signal.throwIfAborted() }
-  await assert.rejects(api.apiRequest('/auth/login', { auth: false, signal: controller.signal }), { name: 'AbortError' })
+  await assert.rejects(api.apiRequest('/public', { auth: false }), { code: 'INVALID_RESPONSE' })
+  const controller = new AbortController(); controller.abort()
+  await assert.rejects(api.apiRequest('/public', { auth: false, signal: controller.signal }), { name: 'AbortError' })
   context.mock.timers.enable({ apis: ['setTimeout'] })
   globalThis.fetch = (_url, options) => new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason)))
-  const timeout = api.apiRequest('/auth/login', { auth: false })
-  context.mock.timers.tick(15_000)
-  await assert.rejects(timeout, { code: 'TIMEOUT' })
-  context.mock.timers.reset()
+  const timed = api.apiRequest('/public', { auth: false }); context.mock.timers.tick(15_000)
+  await assert.rejects(timed, { code: 'TIMEOUT' }); context.mock.timers.reset()
 })
 
-test('Token 到期自动清理；存储被禁止时不假装登录成功', async (context) => {
-  context.mock.timers.enable({ apis: ['setTimeout'] })
-  const token = `header.${btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 10 }))}.signature`
-  await loginAs('admin', token)
-  context.mock.timers.tick(11_000)
-  assert.equal(auth.getAuthSnapshot().status, 'anonymous')
-  context.mock.timers.reset()
-  sessionStorage.setItem = () => { throw new Error('blocked') }
-  await assert.rejects(loginAs(), { code: 'STORAGE_UNAVAILABLE' })
-  assert.equal(auth.getAuthSnapshot().status, 'anonymous')
+test('跨标签广播仅提示重新核实身份；焦点验证身份不变时保留页面和缓存，清理后不再响应', async () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const target = new EventTarget(), channels = []
+  target.BroadcastChannel = class { messages = []; onmessage = null; closed = false
+    constructor() { channels.push(this) } postMessage(value) { this.messages.push(value) } close() { this.closed = true } }
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: target })
+  const cleanup = auth.startAuthSync()
+  try {
+    await loginAs(); assert.deepEqual(channels[0].messages, ['changed'])
+    const snapshot = auth.getAuthSnapshot(); queryClient.setQueryData(['private'], 'keep')
+    window.dispatchEvent(new Event('focus')); await auth.restoreAuth(true)
+    assert.equal(auth.getAuthSnapshot(), snapshot); assert.equal(queryClient.getQueryData(['private']), 'keep')
+    globalThis.fetch = async () => json({ user: user('buyer') })
+    channels[0].onmessage({ data: 'changed' }); await auth.restoreAuth(true)
+    assert.equal(auth.getAuthSnapshot().session.role, 'buyer'); assert.equal(queryClient.getQueryData(['private']), undefined)
+    cleanup(); assert.equal(channels[0].closed, true)
+    channels[0].onmessage({ data: 'changed' }); assert.equal(auth.getAuthSnapshot().session.role, 'buyer')
+  } finally { cleanup(); if (previous) Object.defineProperty(globalThis, 'window', previous); else delete globalThis.window }
 })
 
 test('redirect 拒绝外链、反斜杠、控制字符和登录循环，允许内部详情链接', () => {
@@ -233,7 +271,7 @@ test('四角色导航集中映射到真实工作台和业务列表', () => {
 })
 
 test('显式 demo 模式完全不请求后端，仍支持四角色演示', async () => {
-  auth.logout()
+  auth.invalidateAuth()
   await vite.close()
   await setup('production')
   globalThis.fetch = () => { throw new Error('演示模式不得请求 API') }
@@ -243,9 +281,9 @@ test('显式 demo 模式完全不请求后端，仍支持四角色演示', async
     assert.equal(session.role, role)
     assert.equal(session.username, account)
     assert.equal(typeof session.organizationName, 'string')
-    assert.equal(storage.getAccessToken(), null)
+    assert.equal(sessionStorage.getItem('liangmu_api_token_v1'), null)
     assert.equal(storage.getAuthSession().role, role)
-    auth.logout()
+    auth.invalidateAuth()
   }
 })
 
@@ -259,7 +297,7 @@ test('风险分析统一数据源正确编码 ID、携带认证、透传取消�
   const requests = []
   globalThis.fetch = async (url, options) => {
     requests.push({ url, options })
-    assert.equal(options.headers.Authorization, 'Bearer token-admin')
+    assert.equal(options.credentials, 'include'); assert.equal(options.headers.Authorization, undefined)
     if (url.endsWith('/review')) return json({ batchId, decision: 'approved' })
     return json({ analysis: options.method === 'POST' ? { id: analysisId } : null })
   }
@@ -446,10 +484,10 @@ test('Hook 成功回调的 await 期间切换身份，也不能写入旧分析�
   const { hook, queryKey } = await createRiskHookHarness()
   globalThis.fetch = async () => riskResponse(riskFrame('result', { analysis: riskAnalysis() }))
   context.mock.method(queryClient, 'cancelQueries', async () => {
-    storage.setAccessToken('token-B')
+    storage.advanceAuthRevision('user-B')
     queryClient.clear()
   })
   await hook.startAnalyze()
   assert.equal(queryClient.getQueryData(queryKey), undefined)
-  assert.equal(storage.getAccessToken(), 'token-B')
+  assert.equal(storage.getAuthUserId(), 'user-B')
 })

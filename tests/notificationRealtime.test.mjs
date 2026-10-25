@@ -22,12 +22,12 @@ async function setup(mode = 'api') {
       load(id) {
         if (id !== '\0virtual:notification-effect') return
         return `
-          export const fixture = { token: 'token-A', session: { userId: 'user-A' }, authenticated: true,
+          export const fixture = { revision: 1, session: { userId: 'user-A' }, authenticated: true,
             effect: null, calls: [], invalidations: [], sockets: [], logouts: [], demo: null }
           export const useEffect = (callback) => { fixture.effect = callback }
           export const useAuth = () => ({ session: fixture.session, isAuthenticated: fixture.authenticated,
-            logout: (message) => fixture.logouts.push(message) })
-          export const getAccessToken = () => fixture.token
+            invalidateAuth: (message) => fixture.logouts.push(message) })
+          export const getAuthRevision = () => fixture.revision
           export const useQueryClient = () => ({ invalidateQueries: ({ queryKey }) => {
             fixture.invalidations.push(queryKey); return Promise.resolve()
           } })
@@ -74,7 +74,7 @@ test('实时 Effect 先注册监听再连接，connect/重连补查通知与聊�
   const cleanup = start(), socket = fixture.sockets[0]
   assert.equal(fixture.sockets.length, 1)
   assert.equal(socket.url, 'https://liangmu-trace-api.onrender.com')
-  assert.deepEqual(socket.options, { path: '/socket.io', auth: { token: 'token-A' }, autoConnect: false })
+  assert.deepEqual(socket.options, { path: '/socket.io', auth: { userId: 'user-A' }, withCredentials: true, autoConnect: false })
   assert.deepEqual(fixture.calls, [
     ['on', 'connect'], ['on', 'notifications:changed'], ['on', 'chat:changed'],
     ['on', 'session:invalid'], ['on', 'connect_error'], ['connect'],
@@ -101,9 +101,9 @@ test('清理移除监听并断开连接，即使旧回调被排队也不刷新�
   assert.deepEqual(fixture.logouts, [])
 })
 
-test('Token 变化后旧连接提示/失效事件被丢弃，新账号只失效自己的缓存键', () => {
+test('身份版本变化后旧连接提示/失效事件被丢弃，新账号只失效自己的缓存键', () => {
   const cleanup = start(), old = fixture.sockets[0]
-  fixture.token = 'token-B'
+  fixture.revision++
   for (const event of ['connect', 'notifications:changed', 'chat:changed', 'session:invalid']) old.handlers.get(event)()
   old.handlers.get('connect_error')({ data: { code: 'INVALID_TOKEN' } })
   assert.deepEqual(fixture.invalidations, [])
@@ -111,7 +111,7 @@ test('Token 变化后旧连接提示/失效事件被丢弃，新账号只失效�
   cleanup()
   fixture.session = { userId: 'user-B' }
   const cleanupNew = start(), current = fixture.sockets[1]
-  assert.equal(current.options.auth.token, 'token-B')
+  assert.equal(current.options.auth.userId, 'user-B')
   current.handlers.get('connect')()
   assert.deepEqual(fixture.invalidations, [noticeKey('user-B'), chatKey('user-B')])
   cleanupNew()
@@ -129,11 +129,11 @@ test('临时连接错误不清登录，明确的身份失效才断开并通知�
   cleanup()
 })
 
-test('未登录或缺少 Token 时不建立真实连接', () => {
+test('未登录或缺少用户身份时不建立真实连接', () => {
   fixture.authenticated = false
   assert.equal(start(), undefined)
   fixture.authenticated = true
-  fixture.token = null
+  fixture.session = null
   assert.equal(start(), undefined)
   assert.deepEqual(fixture.sockets, [])
 })

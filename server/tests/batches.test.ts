@@ -1,3 +1,4 @@
+import { sessionHeaders, loginToken } from './helpers/session.js'
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import type { AddressInfo } from 'node:net'
@@ -558,17 +559,17 @@ async function tokenFor(account: string) {
   const role = users.get(account)!.role
   const response = await fetch(`${api.base}/api/auth/login`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { ...sessionHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify({ account, password, role }),
   })
   assert.equal(response.status, 200)
-  return (await response.json()).accessToken as string
+  return loginToken(response)
 }
 
 async function get(path: string, role?: string) {
   const token = role ? await tokenFor(role) : null
   return fetch(`${api.base}${path}`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    headers: sessionHeaders(token),
   })
 }
 
@@ -582,7 +583,7 @@ async function send(
   return fetch(`${api.base}${path}`, {
     method,
     headers: {
-      Authorization: `Bearer ${token}`,
+      ...sessionHeaders(token),
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),

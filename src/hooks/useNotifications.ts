@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { io } from 'socket.io-client'
 import { apiBaseUrl, authMode } from '../config/api'
 import { useAuth } from './useAuth'
-import { getAccessToken } from '../utils/auth'
+import { getAuthRevision } from '../utils/auth'
 import type { NotificationQuery } from '../types/notification'
 import { listNotifications, markNotificationRead } from '../services/notificationDataSource'
 import { subscribeDemoNotifications } from '../services/notificationDemo'
@@ -41,12 +41,13 @@ export function useNotifications(input: NotificationQuery) {
 // Socket.IO 实时连接（通常从轮询升级到 WebSocket）；收到通知变更后让缓存失效，不直接追加数组。
 
 export function useNotificationRealtime() {
-    const { session, isAuthenticated, logout } = useAuth()
+    const { session, isAuthenticated, invalidateAuth } = useAuth()
     const queryClient = useQueryClient()
     const userId = session?.userId
+    const revision = getAuthRevision()
 
     useEffect(() => {
-        if (!isAuthenticated) return
+        if (!isAuthenticated || !userId) return
 
         const invalidate = () => {
             void queryClient.invalidateQueries({
@@ -59,37 +60,35 @@ export function useNotificationRealtime() {
             return subscribeDemoNotifications(invalidate)
         }
 
-        const token = getAccessToken()
-        if (!token) return
-
         let active = true
         const socket = io(
             new URL(apiBaseUrl, window.location.origin).origin,
             {
                 path: '/socket.io',
-                auth: { token },
+                auth: { userId },
+                withCredentials: true,
                 autoConnect: false,
             },
         )
 
         const sync = () => {
             // 旧连接的回调不能影响新账号。
-            if (active && getAccessToken() === token) {
+            if (active && getAuthRevision() === revision) {
                 invalidate()
                 void queryClient.invalidateQueries({ queryKey: chatKey(userId) })
             }
         }
         const syncChat = () => {
-            if (active && getAccessToken() === token) {
+            if (active && getAuthRevision() === revision) {
                 void queryClient.invalidateQueries({ queryKey: chatKey(userId) })
             }
         }
 
         const expired = () => {
-            if (!active || getAccessToken() !== token) return
+            if (!active || getAuthRevision() !== revision) return
 
             socket.disconnect()
-            logout('实时连接的登录身份已失效，请重新登录')
+            invalidateAuth('实时连接的登录身份已失效，请重新登录')
         }
 
         // 首次连接、自动重连都重新查询数据库。
@@ -102,6 +101,8 @@ export function useNotificationRealtime() {
             const code = error.data?.code
             if ([
                 'INVALID_TOKEN',
+                'UNAUTHENTICATED',
+                'SESSION_CHANGED',
                 'ACCOUNT_DISABLED',
                 'ORGANIZATION_DISABLED',
                 'INVALID_ORGANIZATION',
@@ -118,5 +119,5 @@ export function useNotificationRealtime() {
             socket.removeAllListeners()
             socket.disconnect()
         }
-    }, [isAuthenticated, userId, queryClient, logout])
+    }, [isAuthenticated, userId, revision, queryClient, invalidateAuth])
 }

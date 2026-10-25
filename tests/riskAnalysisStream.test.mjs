@@ -38,7 +38,7 @@ beforeEach(async () => {
   source = await vite.ssrLoadModule('/src/services/herbDataSource.ts')
   api = await vite.ssrLoadModule('/src/services/api.ts')
   storage = await vite.ssrLoadModule('/src/utils/auth.ts')
-  storage.setAccessToken('token-A')
+  storage.advanceAuthRevision('user-A')
 })
 afterEach(async () => {
   await vite.close()
@@ -57,7 +57,7 @@ test('SSE 解析跨字节中文、跨块 CRLF、多行 data 与心跳，只在�
     calls += 1
     assert.equal(url, '/api/batches/batch-test/risk-analysis/stream')
     assert.equal(request.method, 'POST')
-    assert.equal(request.headers.Authorization, 'Bearer token-A')
+    assert.equal(request.credentials, 'include'); assert.equal(request.headers.Authorization, undefined)
     assert.equal(request.headers.Accept, 'text/event-stream')
     return streamResponse(text, true)
   }
@@ -108,7 +108,7 @@ test('SSE 中的业务错误保留错误码，不自动重试或误清理登录'
   await assert.rejects(source.streamBatchRisk('batch-test', options()), { status: 502, code: 'AI_UPSTREAM_ERROR' })
   assert.equal(calls, 1)
   assert.equal(authFailures, 0)
-  assert.equal(storage.getAccessToken(), 'token-A')
+  assert.equal(storage.getAuthUserId(), 'user-A')
 })
 
 test('SSE 开始前的 HTTP 401 与 JSON 请求共用登录失效处理', async () => {
@@ -144,13 +144,13 @@ test('进度期间切换账号会丢弃后续旧结果，结束旧连接', async
   globalThis.fetch = async () => streamResponse(frame('progress', progress) + frame('result', { analysis }))
   await assert.rejects(source.streamBatchRisk('batch-test', options(() => {
     seen += 1
-    storage.setAccessToken('token-B')
+    storage.advanceAuthRevision('user-B')
   })), { name: 'AbortError' })
   assert.equal(seen, 1)
-  assert.equal(storage.getAccessToken(), 'token-B')
+  assert.equal(storage.getAuthUserId(), 'user-B')
 })
 
-test('SSE 整体 70 秒超时包含读取阶段，心跳不重置超时且 Token 保留', async (context) => {
+test('SSE 整体 70 秒超时包含读取阶段，心跳不重置超时且 身份保留', async (context) => {
   let cancelled = false
   globalThis.fetch = async () => new Response(new ReadableStream({
     start(controller) { controller.enqueue(new TextEncoder().encode(': keep-alive\n\n')) },
@@ -164,6 +164,6 @@ test('SSE 整体 70 秒超时包含读取阶段，心跳不重置超时且 Token
   context.mock.timers.tick(55_000)
   await rejected
   assert.equal(cancelled, true)
-  assert.equal(storage.getAccessToken(), 'token-A')
+  assert.equal(storage.getAuthUserId(), 'user-A')
   context.mock.timers.reset()
 })

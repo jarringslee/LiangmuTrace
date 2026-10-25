@@ -24,7 +24,7 @@ before(async () => {
         if (id !== '\0virtual:accounts') return
         return `
           import { createElement } from 'react'
-          export const fixture = { buttons: [], forms: [], confirmations: [], messages: [], token: 'admin-token', hook: {}, registration: {} }
+          export const fixture = { buttons: [], forms: [], confirmations: [], messages: [], revision: 1, hook: {}, registration: {} }
           const box = ({ children }) => createElement('div', null, children)
           export const Alert = ({ title }) => box({ children: title }), Space = box, Tag = box, Select = box
           export const Typography = { Paragraph: box }
@@ -39,7 +39,7 @@ before(async () => {
           export const App = { useApp: () => ({ message: { success: text => fixture.messages.push(text) }, modal: { confirm: props => {
             fixture.confirmations.push(props); return { destroy() {} }
           } } }) }
-          export const useAccounts = () => fixture.hook, getAccessToken = () => fixture.token
+          export const useAccounts = () => fixture.hook, getAuthRevision = () => fixture.revision
           export const useMutation = () => fixture.registration, registerBuyer = () => {}
         `
       },
@@ -57,8 +57,8 @@ beforeEach(() => {
   Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, value: {
     getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key),
   } })
-  storage.setAccessToken('test-token')
-  fixture.buttons = []; fixture.forms = []; fixture.confirmations = []; fixture.messages = []; fixture.token = 'admin-token'
+  storage.advanceAuthRevision('test-user')
+  fixture.buttons = []; fixture.forms = []; fixture.confirmations = []; fixture.messages = []; fixture.revision = 1
   fixture.hook = { query: { data: directory, isSuccess: true, isFetching: false, isPaused: false }, create: { isPending: false }, setStatus: { isPending: false, mutateAsync: async () => {} } }
   fixture.registration = { isPending: false, mutateAsync: async () => ({ username: 'newbuyer' }) }
 })
@@ -83,9 +83,9 @@ test('公开注册不带Token，只挑选公开字段；确认密码/角色/已�
   }
   assert.deepEqual(await accounts.registerBuyer({ ...input, role: 'admin', organizationId: 'existing', confirmPassword: 'Example-123' }), { id: 'new', username: 'newbuyer' })
 })
-test('管理请求带Bearer并只传状态，返回账号必须匹配目标；创建不传确认密码', async () => {
+test('管理请求带Cookie并只传状态，返回账号必须匹配目标；创建不传确认密码', async () => {
   globalThis.fetch = async (url, options) => {
-    assert.equal(options.headers.Authorization, 'Bearer test-token')
+    assert.equal(options.credentials, 'include'); assert.equal(options.headers.Authorization, undefined)
     if (options.method === 'POST') { assert.equal('confirmPassword' in JSON.parse(options.body), false); return json({ account }) }
     assert.equal(url, '/api/accounts/buyer-test/status'); assert.deepEqual(JSON.parse(options.body), { status: 'disabled' })
     return json({ account: { ...account, status: 'disabled' } })
@@ -120,6 +120,6 @@ test('停用确认先说明保留历史，身份变化后的旧确认框不能�
   fixture.hook.setStatus.mutateAsync = async () => { calls++ }
   renderManager(); button('停用').onClick()
   assert.match(fixture.confirmations[0].content, /历史批次、消息和审核记录保留/)
-  fixture.token = 'another-admin-token'
+  fixture.revision++
   await fixture.confirmations[0].onOk(); assert.equal(calls, 0)
 })

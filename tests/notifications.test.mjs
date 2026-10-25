@@ -41,10 +41,10 @@ beforeEach(async () => {
   demo = await vite.ssrLoadModule('/src/services/notificationDemo.ts')
   source = await vite.ssrLoadModule('/src/services/notificationDataSource.ts')
   storage = await vite.ssrLoadModule('/src/utils/auth.ts')
-  storage.setAccessToken('token-A')
+  storage.advanceAuthRevision('user-A')
 })
 afterEach(async () => {
-  auth?.logout()
+  auth?.invalidateAuth()
   auth = undefined
   queryClient?.clear()
   queryClient = undefined
@@ -94,10 +94,10 @@ test('demo 已读持久化且幂等，事件订阅/清理正常；未知通知�
   assert.throws(() => demo.markDemoNotificationRead('unknown'), { status: 404 })
 })
 
-test('通知数据源正确查询/编码路径、携带 JWT 与取消信号，已读不提交收件人', async () => {
+test('通知数据源正确查询/编码路径、携带 Cookie 与取消信号，已读不提交收件人', async () => {
   globalThis.fetch = async (url, options) => {
     assert.equal(url, '/api/notifications?page=2&pageSize=10&status=unread')
-    assert.equal(options.headers.Authorization, 'Bearer token-A'); assert.ok(options.signal)
+    assert.equal(options.credentials, 'include'); assert.equal(options.headers.Authorization, undefined); assert.ok(options.signal)
     return new Response(JSON.stringify({ ...page, page: 2, total: 11 }))
   }
   assert.equal((await source.listNotifications({ page: 2, pageSize: 10, status: 'unread' })).page, 2)
@@ -114,19 +114,19 @@ test('通知数据源正确查询/编码路径、携带 JWT 与取消信号，�
 test('通知业务失败不清登录，切换账号后丢弃旧查询/旧已读响应', async () => {
   globalThis.fetch = async () => new Response(JSON.stringify({ error: { code: 'FORBIDDEN', message: '无权限' } }), { status: 403 })
   await assert.rejects(source.markNotificationRead(item.id), { status: 403 })
-  assert.equal(storage.getAccessToken(), 'token-A')
+  assert.equal(storage.getAuthUserId(), 'user-A')
   globalThis.fetch = async () => {
-    storage.setAccessToken('token-B')
+    storage.advanceAuthRevision('user-B')
     return new Response(JSON.stringify(page))
   }
   await assert.rejects(source.listNotifications({ page: 1, pageSize: 10, status: 'all' }), { name: 'AbortError' })
-  storage.setAccessToken('token-A')
+  storage.advanceAuthRevision('user-A')
   globalThis.fetch = async () => {
-    storage.setAccessToken('token-B')
+    storage.advanceAuthRevision('user-B')
     return new Response(JSON.stringify({ item: { ...item, readAt: '2026-10-05T01:00:00Z' } }))
   }
   await assert.rejects(source.markNotificationRead(item.id), { name: 'AbortError' })
-  assert.equal(storage.getAccessToken(), 'token-B')
+  assert.equal(storage.getAuthUserId(), 'user-B')
 })
 
 test('非管理员通知 Hook 同样启用，已读只失效本用户缓存且失败不自动重试', async () => {

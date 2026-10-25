@@ -1,3 +1,4 @@
+import { sessionHeaders, loginToken } from './helpers/session.js'
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import type { AddressInfo } from 'node:net'
@@ -15,7 +16,7 @@ const { createApp } = await import('../src/app.js')
 const { createAuthService } = await import('../src/services/auth.js')
 const { authenticate, requireRoles } = await import('../src/middleware/auth.js')
 const { errorHandler } = await import('../src/middleware/error.js')
-const { envSchema } = await import('../src/config/env.js')
+const { env, envSchema } = await import('../src/config/env.js')
 const { prisma } = await import('../src/lib/prisma.js')
 
 const password = 'example-password'
@@ -53,16 +54,16 @@ after(async () => {
 
 function login(body: unknown, base = api.base) {
   return fetch(`${base}/api/auth/login`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    method: 'POST', headers: { ...sessionHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   })
 }
 async function tokenFor(role: string) {
   const response = await login({ account: role, password, role })
   assert.equal(response.status, 200)
-  return (await response.json()).accessToken as string
+  return loginToken(response)
 }
 function me(token?: string) {
-  return fetch(`${api.base}/api/auth/me`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+  return fetch(`${api.base}/api/auth/me`, { headers: sessionHeaders(token) })
 }
 function handcraftedToken(options: { expired?: boolean; issuer?: string; audience?: string; alg?: string; sub?: string; noExp?: boolean } = {}) {
   const jwt = new SignJWT({ role: 'admin' })
@@ -81,16 +82,25 @@ for (const role of roles) {
     assert.equal(response.headers.get('cache-control'), 'no-store')
     const result = await response.json()
     assert.equal(result.expiresIn, 3600)
-    assert.equal(result.tokenType, 'Bearer')
+    assert.equal('tokenType' in result, false)
+    assert.equal('accessToken' in result, false)
     assert.equal(result.user.role, role)
     assert.equal(result.user.organizationId, `org-${role}`)
     assert.equal('passwordHash' in result.user, false)
     assert.equal('status' in result.user, false)
-    const claims = decodeJwt(result.accessToken)
+    const cookie = response.headers.get('set-cookie')!
+    assert.match(cookie, /^liangmu_session=/)
+    assert.match(cookie, /HttpOnly/)
+    assert.match(cookie, /SameSite=Lax/)
+    assert.match(cookie, /Path=\/(?:;|$)/)
+    assert.match(cookie, /Max-Age=3600/)
+    assert.doesNotMatch(cookie, /Domain=|Secure/)
+    const token = loginToken(response)
+    const claims = decodeJwt(token)
     assert.equal(claims.sub, role)
     assert.equal(claims.role, undefined)
     assert.equal(claims.email, undefined)
-    const current = await me(result.accessToken)
+    const current = await me(token)
     assert.equal(current.status, 200)
     assert.deepEqual((await current.json()).user, result.user)
   })
@@ -128,10 +138,72 @@ test('错密码、不存在的账号、错角色都返回相同的 401', async (
   assert.deepEqual(results[1], results[2])
 })
 
-test('无凭证、错误 scheme、乱码 Token 返回 401', async () => {
+test('无 Cookie、乱码 Token 返回 401，合法 Bearer 也不能作为 Cookie 认证的兜底', async () => {
   assert.equal((await me()).status, 401)
   assert.equal((await me('bad-token')).status, 401)
   assert.equal((await fetch(`${api.base}/api/auth/me`, { headers: { Authorization: 'Basic abc' } })).status, 401)
+  const token = await tokenFor('admin')
+  assert.equal((await fetch(`${api.base}/api/auth/me`, { headers: { Authorization: `Bearer ${token}` } })).status, 401)
+  const invalidCookie = await fetch(`${api.base}/api/auth/me`, {
+    headers: { Authorization: `Bearer ${token}`, Cookie: 'liangmu_session=invalid' },
+  })
+  assert.equal(invalidCookie.status, 401)
+})
+
+test('期待用户ID只用于核对 Cookie 身份，不能冒充账号；旧标签身份不符返回409', async () => {
+  const token = await tokenFor('admin')
+  assert.equal((await fetch(`${api.base}/api/auth/me`, { headers: { 'X-Liangmu-User': 'admin' } })).status, 401)
+  const ok = await fetch(`${api.base}/api/auth/me`, { headers: { ...sessionHeaders(token), 'X-Liangmu-User': 'admin' } })
+  assert.equal(ok.status, 200)
+  const stale = await fetch(`${api.base}/api/auth/me`, { headers: { ...sessionHeaders(token), 'X-Liangmu-User': 'buyer' } })
+  assert.equal(stale.status, 409)
+  assert.equal((await stale.json()).error.code, 'SESSION_CHANGED')
+})
+
+test('Cookie 解析忽略无关字段，拒绝重复、空值、异常编码和超长认证 Cookie', async () => {
+  const token = await tokenFor('admin')
+  const read = (Cookie: string) => fetch(`${api.base}/api/auth/me`, { headers: { Cookie } })
+  assert.equal((await read(`theme=light; liangmu_session=${token}; other=value`)).status, 200)
+  for (const cookie of [`liangmu_session=${token}; liangmu_session=${token}`, 'liangmu_session=',
+    'liangmu_session=%ZZ', `liangmu_session=${'a'.repeat(4097)}.b.c`]) {
+    const response = await read(cookie)
+    assert.equal(response.status, 401)
+    assert.equal((await response.json()).error.code, 'INVALID_TOKEN')
+  }
+})
+
+test('退出幂等且不要求有效凭证，响应清除同路径 Cookie；不声称撤销已签发 JWT', async () => {
+  const token = await tokenFor('admin')
+  for (const value of [token, 'expired-or-forged', undefined]) {
+    const response = await fetch(`${api.base}/api/auth/logout`, {
+      method: 'POST', headers: sessionHeaders(value),
+    })
+    assert.equal(response.status, 204)
+    assert.equal(response.headers.get('cache-control'), 'no-store')
+    const cookie = response.headers.get('set-cookie')!
+    assert.match(cookie, /^liangmu_session=;/)
+    assert.match(cookie, /Path=\/(?:;|$)/)
+    assert.match(cookie, /Expires=Thu, 01 Jan 1970/)
+    assert.match(cookie, /HttpOnly/)
+    assert.match(cookie, /SameSite=Lax/)
+    assert.equal(await response.text(), '')
+  }
+  assert.equal((await me()).status, 401)
+  // Node 显式重放旧 JWT 仍有效；本轮没有数据库 Session 或吊销列表。
+  assert.equal((await me(token)).status, 200)
+})
+
+test('生产签发与清除 Cookie 都要求 Secure，不扩大 Domain 或跨站范围', async () => {
+  const original = env.NODE_ENV
+  env.NODE_ENV = 'production'
+  try {
+    const response = await login({ account: 'admin', password, role: 'admin' })
+    assert.equal(response.status, 200)
+    assert.match(response.headers.get('set-cookie')!, /; Secure(?:;|$)/)
+    const logout = await fetch(`${api.base}/api/auth/logout`, { method: 'POST', headers: sessionHeaders() })
+    assert.match(logout.headers.get('set-cookie')!, /; Secure(?:;|$)/)
+    assert.doesNotMatch(logout.headers.get('set-cookie')!, /Domain=/)
+  } finally { env.NODE_ENV = original }
 })
 
 test('拒绝过期、错误签发者/受众/算法、缺少过期时间的 Token', async () => {
@@ -186,9 +258,9 @@ test('已删除用户的有效 Token 返回 401', async () => {
 test('角色守卫放行管理员、拒绝采购商，不信任 Token 中伪造的角色', async () => {
   assert.equal((await fetch(`${guarded.base}/admin`)).status, 401)
   const admin = await tokenFor('admin')
-  assert.equal((await fetch(`${guarded.base}/admin`, { headers: { Authorization: `Bearer ${admin}` } })).status, 200)
+  assert.equal((await fetch(`${guarded.base}/admin`, { headers: { ...sessionHeaders(admin) } })).status, 200)
   const buyerWithAdminClaim = await handcraftedToken()
-  assert.equal((await fetch(`${guarded.base}/admin`, { headers: { Authorization: `Bearer ${buyerWithAdminClaim}` } })).status, 403)
+  assert.equal((await fetch(`${guarded.base}/admin`, { headers: { ...sessionHeaders(buyerWithAdminClaim) } })).status, 403)
 })
 
 test('角色调整后，旧 Token 立即按数据库中的新权限处理', async () => {
@@ -199,7 +271,7 @@ test('角色调整后，旧 Token 立即按数据库中的新权限处理', asyn
     user.organization!.type = 'buyer'
     const current = await me(token)
     assert.equal((await current.json()).user.role, 'buyer')
-    assert.equal((await fetch(`${guarded.base}/admin`, { headers: { Authorization: `Bearer ${token}` } })).status, 403)
+    assert.equal((await fetch(`${guarded.base}/admin`, { headers: { ...sessionHeaders(token) } })).status, 403)
   } finally {
     user.role = 'admin'
     user.organization!.type = 'platform'
@@ -208,7 +280,7 @@ test('角色调整后，旧 Token 立即按数据库中的新权限处理', asyn
 
 test('非法 JSON 和未知 API 使用统一错误格式', async () => {
   const malformed = await fetch(`${api.base}/api/auth/login`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{broken',
+    method: 'POST', headers: { ...sessionHeaders(), 'Content-Type': 'application/json' }, body: '{broken',
   })
   assert.equal(malformed.status, 400)
   assert.equal((await malformed.json()).error.code, 'INVALID_JSON')

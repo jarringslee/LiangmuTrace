@@ -97,18 +97,68 @@ test('可信代理默认关闭，支持明确 IP/CIDR；拒绝全信任、跳数
   assert.equal(app.get('trust proxy'), false)
 })
 
-test('允许真实前端源的 Bearer 预检；非允许来源无 CORS 许可，不开启 Cookie 凭证', async () => {
+test('允许真实前端源的 Cookie/CSRF 预检，不再放行 Authorization 请求头', async () => {
   const response = await fetch(`${base}/api/batches`, { method: 'OPTIONS', headers: {
     Origin: env.CLIENT_ORIGIN, 'Access-Control-Request-Method': 'POST',
-    'Access-Control-Request-Headers': 'authorization,content-type',
+    'Access-Control-Request-Headers': 'x-liangmu-csrf,content-type',
   } })
   assert.equal(response.status, 204)
   assert.equal(response.headers.get('access-control-allow-origin'), env.CLIENT_ORIGIN)
-  assert.match(response.headers.get('access-control-allow-headers')!, /Authorization/)
-  assert.equal(response.headers.get('access-control-allow-credentials'), null)
+  assert.match(response.headers.get('access-control-allow-headers')!, /X-Liangmu-CSRF/)
+  assert.match(response.headers.get('access-control-allow-headers')!, /X-Liangmu-User/)
+  assert.doesNotMatch(response.headers.get('access-control-allow-headers')!, /Authorization/i)
+  assert.equal(response.headers.get('access-control-allow-credentials'), 'true')
   const denied = await fetch(`${base}/api/batches`, { headers: { Origin: 'https://other.example.test' } })
   assert.equal(denied.headers.get('access-control-allow-origin'), null)
   assert.equal(denied.status, 401)
+})
+
+test('所有 API 写操作先检查 CSRF，包括登录/注册、无请求体退出和付费 SSE', async () => {
+  for (const [path, method] of [
+    ['/auth/login', 'POST'], ['/auth/register', 'POST'], ['/auth/logout', 'POST'],
+    ['/accounts', 'POST'], ['/batches', 'POST'], ['/notifications/notice/read', 'PATCH'],
+    ['/chat/conversations', 'POST'], ['/batches/batch/risk-analysis/stream', 'POST'],
+    ['/assistant/conversation/messages/stream', 'POST'],
+  ]) {
+    const response = await fetch(`${base}/api${path}`, { method })
+    assert.equal(response.status, 403, path)
+    assert.equal((await response.json()).error.code, 'CSRF_REJECTED')
+    assert.equal(response.headers.get('set-cookie'), null)
+  }
+})
+
+test('CSRF 拒绝简单表单、错误自定义头、伪造/空来源和无效 Referer', async () => {
+  const rejectedHeaders: Record<string, string>[] = [
+    { Origin: env.CLIENT_ORIGIN, 'Content-Type': 'application/x-www-form-urlencoded' },
+    { Origin: env.CLIENT_ORIGIN, 'X-Liangmu-CSRF': 'wrong' },
+    ...['null', 'https://evil.example.test', `${env.CLIENT_ORIGIN}.evil.test`]
+      .map(Origin => ({ Origin, 'X-Liangmu-CSRF': '1' })),
+    ...['https://evil.example.test/page', 'not-a-url']
+      .map(Referer => ({ Referer, 'X-Liangmu-CSRF': '1' })),
+  ]
+  for (const headers of rejectedHeaders) {
+    const response = await fetch(`${base}/api/auth/logout`, { method: 'POST', headers })
+    assert.equal(response.status, 403)
+    assert.equal((await response.json()).error.code, 'CSRF_REJECTED')
+    assert.equal(response.headers.get('set-cookie'), null)
+  }
+})
+
+test('正确来源或 CLI 自定义头可退出；自定义头本身不授予登录身份', async () => {
+  const acceptedHeaders: Record<string, string>[] = [
+    { 'X-Liangmu-CSRF': '1', Origin: env.CLIENT_ORIGIN },
+    { 'X-Liangmu-CSRF': '1', Referer: `${env.CLIENT_ORIGIN}/profile` },
+    { 'X-Liangmu-CSRF': '1' },
+  ]
+  for (const headers of acceptedHeaders) {
+    const response = await fetch(`${base}/api/auth/logout`, { method: 'POST', headers })
+    assert.equal(response.status, 204)
+    assert.match(response.headers.get('set-cookie')!, /^liangmu_session=;/)
+  }
+  const privateWrite = await fetch(`${base}/api/batches`, {
+    method: 'POST', headers: { 'X-Liangmu-CSRF': '1', Origin: env.CLIENT_ORIGIN },
+  })
+  assert.equal(privateWrite.status, 401)
 })
 
 test('CORS 与无 Origin 都不能绕过认证；跨域客户端可读取 Retry-After', async () => {

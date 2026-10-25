@@ -1,5 +1,5 @@
 import { apiBaseUrl, authMode } from '../config/api'
-import { getAccessToken } from '../utils/auth'
+import { getAuthRevision, getAuthUserId } from '../utils/auth'
 import { readSseMessages, SseProtocolError, type SseMessage } from './sse'
 
 export class ApiError extends Error {
@@ -20,6 +20,8 @@ type RequestOptions = {
   body?: unknown
   signal?: AbortSignal
   auth?: boolean
+  /** 登录/退出虽然不要求已有身份，仍必须接收或清除 Cookie；公开接口可明确省略。 */
+  credentials?: RequestCredentials
   /** 普通请求默认 15 秒；多轮 AI 分析可单独配置。 */
   timeoutMs?: number
 }
@@ -32,32 +34,37 @@ export function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError'
 }
 
-function responseError(response: Response, body: unknown, authenticated: boolean, token: string | null) {
+function responseError(response: Response, body: unknown, authenticated: boolean) {
   const errorBody = body && typeof body === 'object' && 'error' in body ? body.error : null
   const code = errorBody && typeof errorBody === 'object' && 'code' in errorBody && typeof errorBody.code === 'string'
     ? errorBody.code : `HTTP_${response.status}`
   const message = errorBody && typeof errorBody === 'object' && 'message' in errorBody && typeof errorBody.message === 'string'
     ? errorBody.message : response.status === 403 ? '没有执行此操作的权限' : '服务暂时不可用，请稍后重试'
   const accountBlocked = response.status === 403 && ['ACCOUNT_DISABLED', 'ORGANIZATION_DISABLED', 'INVALID_ORGANIZATION'].includes(code)
-  if (authenticated && token && (response.status === 401 || accountBlocked)) onAuthFailure(message)
+  if (authenticated && (response.status === 401 || accountBlocked || code === 'SESSION_CHANGED')) onAuthFailure(message)
   return new ApiError(response.status, code, message, response.headers.get('Retry-After'))
 }
 
-/** 所有业务 API 共用：JSON、Bearer、超时、取消、错误格式和过期凭证处理。 */
+/** 所有业务 API 共用：Cookie、CSRF、超时、取消、错误格式和旧身份隔离。 */
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
   if (!path.startsWith('/') || path.startsWith('//')) throw new Error('API path 必须为相对接口路径')
   const authenticated = options.auth !== false && authMode === 'api'
-  const token = authenticated ? getAccessToken() : null
+  const revision = getAuthRevision()
+  const userId = authenticated ? getAuthUserId() : null
+  const method = options.method ?? 'GET'
   const timeout = new AbortController()
   const timer = setTimeout(() => timeout.abort(), options.timeoutMs ?? 15_000)
   const signal = options.signal ? AbortSignal.any([options.signal, timeout.signal]) : timeout.signal
   try {
+    signal.throwIfAborted()
     const response = await fetch(`${apiBaseUrl}${path}`, {
-      method: options.method ?? 'GET',
+      method,
+      credentials: options.credentials ?? (options.auth === false ? 'omit' : 'include'),
       headers: {
         Accept: 'application/json',
         ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }),
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(method === 'GET' ? {} : { 'X-Liangmu-CSRF': '1' }),
+        ...(userId ? { 'X-Liangmu-User': userId } : {}),
       },
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
       signal,
@@ -65,9 +72,9 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     const body: unknown = response.status === 204 ? undefined : await response.json().catch(() => undefined)
     signal.throwIfAborted()
     // A 账号发出的请求不能在切到 B 后写入 B 的页面，旧 401 也不能踢掉 B。
-    if (authenticated && token !== getAccessToken()) throw new DOMException('登录身份已变化', 'AbortError')
+    if (authenticated && revision !== getAuthRevision()) throw new DOMException('登录身份已变化', 'AbortError')
     if (!response.ok) {
-      throw responseError(response, body, authenticated, token)
+      throw responseError(response, body, authenticated)
     }
     if (body === undefined && response.status !== 204) throw new ApiError(0, 'INVALID_RESPONSE', '服务返回格式不正确')
     return body as T
@@ -81,30 +88,33 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   }
 }
 
-/** POST + Bearer 的 SSE 请求，不自动重连，避免重复执行付费分析。 */
+/** POST + Cookie/CSRF 的 SSE 请求，不自动重连，避免重复执行付费分析。 */
 export async function apiEventStream(
   path: string,
   options: RequestOptions & { onMessage: (message: SseMessage) => boolean },
 ): Promise<void> {
   if (!path.startsWith('/') || path.startsWith('//')) throw new Error('API path 必须为相对接口路径')
   const authenticated = options.auth !== false && authMode === 'api'
-  const token = authenticated ? getAccessToken() : null
+  const revision = getAuthRevision()
+  const userId = authenticated ? getAuthUserId() : null
   const timeout = new AbortController()
   const timer = setTimeout(() => timeout.abort(), options.timeoutMs ?? 70_000)
   const signal = options.signal ? AbortSignal.any([options.signal, timeout.signal]) : timeout.signal
   let streamStarted = false
   const checkIdentity = () => {
     signal.throwIfAborted()
-    if (authenticated && token !== getAccessToken()) throw new DOMException('登录身份已变化', 'AbortError')
+    if (authenticated && revision !== getAuthRevision()) throw new DOMException('登录身份已变化', 'AbortError')
   }
   try {
     checkIdentity()
     const response = await fetch(`${apiBaseUrl}${path}`, {
       method: options.method ?? 'POST',
+      credentials: options.credentials ?? (options.auth === false ? 'omit' : 'include'),
       headers: {
         Accept: 'text/event-stream',
         ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }),
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...((options.method ?? 'POST') === 'GET' ? {} : { 'X-Liangmu-CSRF': '1' }),
+        ...(userId ? { 'X-Liangmu-User': userId } : {}),
       },
       body: options.body === undefined ? undefined : JSON.stringify(options.body), signal,
     })
@@ -112,7 +122,7 @@ export async function apiEventStream(
     if (!response.ok) {
       const body: unknown = await response.json().catch(() => undefined)
       checkIdentity()
-      throw responseError(response, body, authenticated, token)
+      throw responseError(response, body, authenticated)
     }
     if (response.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'text/event-stream'
       || !response.body) {
@@ -130,8 +140,8 @@ export async function apiEventStream(
     if (timeout.signal.aborted) throw new ApiError(0, 'TIMEOUT', 'AI 连接超时，请重新查询结果或手动重试')
     if (error instanceof ApiError) {
       // SSE 已开始时认证错误只能作为 error 帧返回，也要遵循普通 HTTP 的失效处理。
-      if (streamStarted && authenticated && token && token === getAccessToken()
-        && (error.status === 401 || error.status === 403 && ['ACCOUNT_DISABLED', 'ORGANIZATION_DISABLED', 'INVALID_ORGANIZATION'].includes(error.code))) onAuthFailure(error.message)
+      if (streamStarted && authenticated && revision === getAuthRevision()
+        && (error.status === 401 || error.code === 'SESSION_CHANGED' || error.status === 403 && ['ACCOUNT_DISABLED', 'ORGANIZATION_DISABLED', 'INVALID_ORGANIZATION'].includes(error.code))) onAuthFailure(error.message)
       throw error
     }
     if (error instanceof SseProtocolError) throw new ApiError(0, 'STREAM_INVALID', error.message)

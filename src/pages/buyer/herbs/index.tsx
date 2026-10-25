@@ -192,8 +192,8 @@ export default function BuyerHerbsPage() {
     receiptDialog.current = dialog
   }
 
-  const handleLogout = () => {
-    logout()
+  const handleLogout = async () => {
+    if (!await logout()) return
     navigate('/login', { replace: true })
   }
 

@@ -124,7 +124,7 @@ test('HTTP 无登录/坏 Token 仍可读公开数据；完整详情仍 401，参
     const ok = await fetch(url)
     assert.equal(ok.status, 200); assert.equal(ok.headers.get('cache-control'), 'no-store')
     assert.equal((await ok.json()).batch.traceCode, code)
-    assert.equal((await fetch(url, { headers: { Authorization: 'Bearer expired-or-forged' } })).status, 200)
+    assert.equal((await fetch(url, { headers: { Cookie: 'liangmu_session=expired-or-forged' } })).status, 200)
     assert.equal((await fetch(`${base}/batches/${code}`)).status, 401)
     for (const invalidUrl of [url + '?role=admin', url + '?organizationId=other', `${base}/public/trace/hb-0001`]) {
       const response = await fetch(invalidUrl)
@@ -134,7 +134,7 @@ test('HTTP 无登录/坏 Token 仍可读公开数据；完整详情仍 401，参
     const missing = await fetch(`${base}/public/trace/YM-TRACE-2026-UNKNOWN`)
     assert.equal(missing.status, 404); assert.equal(missing.headers.get('cache-control'), 'no-store')
     assert.equal((await missing.json()).error.message, '档案不存在或暂不可公开')
-    assert.equal((await fetch(url, { method: 'POST' })).status, 404)
+    assert.equal((await fetch(url, { method: 'POST', headers: { 'X-Liangmu-CSRF': '1' } })).status, 404)
     assert.equal((await fetch(`${base}/public/trace`)).status, 404)
   } finally { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())) }
 })

@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { rateLimit } from 'express-rate-limit'
 import { z } from 'zod'
 import { ACCESS_TOKEN_TTL_SECONDS, signAccessToken } from '../lib/token.js'
+import { clearSessionCookie, setSessionCookie } from '../lib/sessionCookie.js'
 import { authenticate } from '../middleware/auth.js'
 import { HttpError } from '../middleware/error.js'
 import type { AuthService } from '../services/auth.js'
@@ -29,7 +30,13 @@ export function createAuthRouter(service: AuthService) {
     const input = loginSchema.parse(req.body)
     const user = await service.login(input.account, input.password, input.role)
     const accessToken = await signAccessToken(user.id)
-    res.json({ accessToken, tokenType: 'Bearer', expiresIn: ACCESS_TOKEN_TTL_SECONDS, user })
+    setSessionCookie(res, accessToken)
+    res.json({ expiresIn: ACCESS_TOKEN_TTL_SECONDS, user })
+  })
+  // 即使凭证已过期、账号已停用也允许退出；全局 CSRF 中间件仍保护此写请求。
+  router.post('/logout', (_req, res) => {
+    clearSessionCookie(res)
+    res.sendStatus(204)
   })
   router.get('/me', authenticate(service), (req, res) => {
     res.json({ user: req.auth })

@@ -2,7 +2,16 @@ import type { AuthSession, UserRole } from '../types/auth'
 
 // 与旧版 Mock 登录隔离；API 模式绝不把本地用户资料当成服务端身份。
 export const AUTH_STORAGE_KEY = 'liangmu_demo_auth_v2'
-export const TOKEN_STORAGE_KEY = 'liangmu_api_token_v1'
+let authRevision = 0
+let authUserId: string | null = null
+
+/** 只在内存中隔离旧请求，不是认证凭证；Cookie 始终由浏览器与后端管理。 */
+export const getAuthRevision = () => authRevision
+export const getAuthUserId = () => authUserId
+export function advanceAuthRevision(userId: string | null = null): number {
+  authUserId = userId
+  return ++authRevision
+}
 
 export function isUserRole(value: unknown): value is UserRole {
   return value === 'admin' || value === 'grower' || value === 'processor' || value === 'buyer'
@@ -39,19 +48,11 @@ export function setAuthSession(session: AuthSession): void {
 }
 
 export function clearAuthSession(): void {
-  try {
-    sessionStorage.removeItem(AUTH_STORAGE_KEY)
-    sessionStorage.removeItem(TOKEN_STORAGE_KEY)
-    sessionStorage.removeItem('liangmu_auth')
-  } catch { /* 存储被浏览器禁用时仍允许清理内存登录态。 */ }
-}
-
-export function getAccessToken(): string | null {
-  try { return sessionStorage.getItem(TOKEN_STORAGE_KEY) } catch { return null }
-}
-
-export function setAccessToken(token: string): void {
-  sessionStorage.setItem(TOKEN_STORAGE_KEY, token)
+  for (const name of ['sessionStorage', 'localStorage'] as const) {
+    for (const key of [AUTH_STORAGE_KEY, 'liangmu_api_token_v1', 'liangmu_auth']) {
+      try { globalThis[name].removeItem(key) } catch { /* 禁止 Web Storage 不影响 API Cookie 登录。 */ }
+    }
+  }
 }
 
 /** 仅允许站内相对路径，防止 open redirect */
