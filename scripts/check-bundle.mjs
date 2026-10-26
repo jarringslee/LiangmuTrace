@@ -19,6 +19,11 @@ export function collectStaticFiles(manifest, entries) {
 }
 
 export function inspectBundle(directory = 'dist') {
+  // Pages 的认证依赖真实代理；静态 JS 构建成功不能代替代理文件交付。
+  for (const file of ['_worker.js', '_routes.json']) {
+    assert.equal(readFileSync(resolve(directory, file), 'utf8'),
+      readFileSync(new URL(`../public/${file}`, import.meta.url), 'utf8'), `Pages 产物缺少或未同步 ${file}`)
+  }
   const manifest = JSON.parse(readFileSync(resolve(directory, '.vite/manifest.json'), 'utf8'))
   const login = 'src/pages/login/index.tsx'
   const chart = 'src/components/charts/DashboardChart.tsx'

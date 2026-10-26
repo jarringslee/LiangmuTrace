@@ -28,6 +28,14 @@ test('同源与完整接口地址正规化；开发可 HTTP、生产跨域必须
   assert.throws(() => resolveApiConfig({ baseUrl: 'http://localhost:4000/api', production: true }), /HTTPS/)
 })
 
+test('Cookie API 生产模式拒绝完整跨站地址，要求真实同源代理', () => {
+  for (const baseUrl of ['https://api.example.test/api', 'https://liangmu-trace-api.onrender.com/api']) {
+    assert.throws(() => resolveApiConfig({ mode: 'api', baseUrl, production: true }), /必须为 \/api/)
+  }
+  assert.equal(resolveApiConfig({ mode: 'api', baseUrl: 'https://api.example.test/api', production: false }).apiBaseUrl,
+    'https://api.example.test/api')
+})
+
 test('拒绝空值、错路径、非 HTTP 协议与地址中的私密/查询数据，不回显原值', () => {
   for (const baseUrl of ['', ' ', '/', '/backend/api', '//api.example.test/api', 'file:///api',
     'https://api.example.test', 'https://api.example.test/v1/api', 'https://',
@@ -42,13 +50,14 @@ test('真实 Vite 构建在非法模式、HTTP 生产接口或 VITE_ 密钥配�
   const cases = [
     [{ VITE_AUTH_MODE: 'invalid' }, /VITE_AUTH_MODE 必须/],
     [{ VITE_API_BASE_URL: 'http://api.example.test/api' }, /HTTPS/],
+    [{ VITE_API_BASE_URL: 'https://liangmu-trace-api.onrender.com/api' }, /必须为 \/api/],
     ...['VITE_DEEPSEEK_API_KEY', 'VITE_DATABASE_URL', 'VITE_JWT_SECRET'].map((key) =>
       [{ [key]: 'private-sentinel' }, /属于服务端私密配置/]),
   ]
   for (const [override, expected] of cases) {
     const result = spawnSync(process.execPath, ['node_modules/vite/bin/vite.js', 'build', '--outDir',
       'node_modules/.vite-tests/invalid-config-build'], {
-      env: { ...process.env, VITE_AUTH_MODE: 'api', VITE_API_BASE_URL: 'https://api.example.test/api', ...override },
+      env: { ...process.env, VITE_AUTH_MODE: 'api', VITE_API_BASE_URL: '/api', ...override },
       encoding: 'utf8', timeout: 5000,
     })
     assert.equal(result.error, undefined)

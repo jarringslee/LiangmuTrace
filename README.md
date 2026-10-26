@@ -9,7 +9,7 @@
 - Cloudflare Pages：<https://liangmutrace.pages.dev>
 - 后端 API：<https://liangmu-trace-api.onrender.com/api/health>
 - 当前线上使用 API 模式，连接 Render 后端、Neon PostgreSQL 演示库与 DeepSeek；不与本机开发数据库互通。静态 demo 保留为独立离线兜底。
-- 在线地址对应已发布版本。本地源码使用 HttpOnly Cookie 认证，以本地同源代理运行；当前 Pages → Render 的跨站部署未适配此契约，不能直接按原跨站配置发布并认定登录可用。
+- Cookie 认证要求同源访问。源码附带 Pages `/api`、`/socket.io` 代理；生产构建须设置 `VITE_AUTH_MODE=api`、`VITE_API_BASE_URL=/api` 并重新发布。旧构建直连 Render 会出现登录成功但无法验证状态；本地修改不代表线上已修复。
 - 已审核档案可匿名访问，例如 [黄精公开溯源](https://liangmutrace.pages.dev/public/trace/YM-TRACE-2026-0015)。完整详情与 AI 需要登录；演示数据不代表真实药材质量认证。
 
 ## 核心业务链路
@@ -90,10 +90,12 @@ API 模式提供最小账号开通：在登录页采购商标签下注册，服�
 
 ### 部署
 
-- Cloudflare Pages：前端静态站点
+- Cloudflare Pages：前端静态站点 + Pages Function 同源 API/Socket 代理
 - GitHub：代码托管与自动部署触发
 
-Pages 托管前端静态产物；真实 API 模式需要独立 HTTPS Node 后端。生产环境配置见 [后端 README](server/README.md)。
+Pages 托管前端，`public/_worker.js` 固定转发 `/api`、`/socket.io` 到 Render，其余路径继续静态托管；`_routes.json` 只让这两类路径调用函数。代理保留 Cookie/Set-Cookie、来源与 CSRF 头，禁止 API 缓存，直接转发 SSE 正文流和 WebSocket 升级。浏览器不直连跨站 Render；认证、数据库与 AI 仍由 Node 后端处理。生产配置见 [后端 README](server/README.md)。
+
+`wrangler.json` 固定 Pages 产物目录与兼容日期，并启用请求中止信号转发，避免旧运行时不支持 `cache: no-store`，以及停止流式请求后上游仍继续处理。该文件只配置 Pages Function，不包含密钥；`VITE_*` 构建变量仍由平台设置。
 
 ## 当前数据架构
 
@@ -153,7 +155,7 @@ npm run dev
 
 只体验前端时，在 `.env.development.local` 设置 `VITE_AUTH_MODE=demo` 后重启 Vite。生产覆盖用 `.env.production.local` 或平台构建环境变量；模式专用文件优先于通用 `.env.local`，进程环境变量优先级最高，不能误认为 `.env.local` 总会覆盖 `.env.production`。[Vite 配置优先级](https://vite.dev/guide/env-and-mode)
 
-本地接后端使用 `VITE_AUTH_MODE=api`、`VITE_API_BASE_URL=/api`，统一从 `http://localhost:5173` 打开，不混用 `127.0.0.1`；后端 `CLIENT_ORIGIN=http://localhost:5173`。Vite 同时代理 REST、SSE 和 `/socket.io`，无需新建公网网关。生产运行真实 API 时需另行提供同源代理或同站 HTTPS 地址，并核对 Cookie、来源与长连接；当前 `SameSite=Lax` 不支持原 Pages → Render 跨站直连认证。本项目暂不进行此项公网适配。
+本地接后端使用 `VITE_AUTH_MODE=api`、`VITE_API_BASE_URL=/api`，统一从 `http://localhost:5173` 打开，不混用 `127.0.0.1`；后端 `CLIENT_ORIGIN=http://localhost:5173`。Vite 同时代理 REST、SSE 和 `/socket.io`。Pages 生产使用相同前端变量，由随构建发布的 `_worker.js` 代理，Render 设置 `NODE_ENV=production`、`CLIENT_ORIGIN=https://liangmutrace.pages.dev`。生产 API 模式只接受 `/api`，旧 Render 绝对地址会在构建时失败；其他托管方式也必须提供真正的同源代理。发布后仍需验证 HTTPS Cookie、来源检查、AI 流式及 Socket，不能把本地检查记成线上或真机通过。
 
 `VITE_*` 会进入浏览器构建产物，禁止填写数据库密码、JWT 密钥或 AI Key。仓库 `.env.production` 保持 demo 默认值；托管平台变量可覆盖它，修改变量后必须重新构建，不能只刷新旧页面。
 

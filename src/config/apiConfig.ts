@@ -59,6 +59,11 @@ export function resolveApiConfig({
     throw new Error('生产环境的跨域 API 地址必须使用 HTTPS')
   }
 
+  // 当前 Cookie 是 SameSite=Lax，禁止把旧的 Pages → Render 跨站直连配置再次发布。
+  if (production && authMode === 'api') {
+    throw new Error('生产 API 模式的 VITE_API_BASE_URL 必须为 /api，并配置 /api、/socket.io 同源代理')
+  }
+
   return {
     authMode,
     apiBaseUrl: `${url.origin}/api`,

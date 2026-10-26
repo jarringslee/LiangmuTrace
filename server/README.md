@@ -50,8 +50,8 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 - `DB_TRANSACTION_TIMEOUT_MS` 默认 15000（整数 1000～60000 毫秒），单独限制交互式事务的执行时间；事务获取等待使用 `DB_CONNECT_TIMEOUT_MS`，不改变原有隔离级别。事务到期仍会取消并回滚，不能用增加超时替代 SQL 优化，也不将模型调用放进事务。[Prisma 事务配置](https://www.prisma.io/docs/orm/v7/prisma-client/queries/transactions)
 - Express 应用显式读取可信代理设置，仅支持 off、loopback 或已核对的 IP/CIDR 列表，拒绝 true/纯跳数/全网 /0。必须另行阻止绕过网关、核对转发头；loopback 不会自动改变服务监听地址。内存限流与广播仍是单实例 MVP，不是全局限流
 - HTTP 仅向配置的前端源给出带凭证的 CORS 许可；允许 Content-Type、X-Liangmu-CSRF、X-Liangmu-User，向浏览器暴露 Retry-After，不再接受 Authorization Bearer 认证。所有 API 写请求额外校验 CSRF，CORS 不代替认证或写入防护。[CORS 原理](https://expressjs.com/en/resources/middleware/cors/)
-- 认证 Cookie 固定 `SameSite=Lax`、主机限定、`Path=/`；生产自动附加 Secure，不增加额外 Cookie 环境变量。本地使用已有 Vite 同源代理；线上需要同源代理或同站 HTTPS，原 Pages → Render 跨站直连不满足此配置，本项目暂不适配或验收该发布路径。
-- Pages 只托管前端；独立 Node HTTPS 后端须支持 `/api`、SSE 无缓冲/不缓存/足够超时以及 `/socket.io` polling/Upgrade。生产代理、数据库 TLS 和微信兼容性需要在实际托管环境核验。
+- 认证 Cookie 固定 `SameSite=Lax`、主机限定、`Path=/`；生产自动附加 Secure，不增加额外 Cookie 环境变量。本地使用 Vite 同源代理；Pages 生产由前端仓库 `public/_worker.js` 和 `_routes.json` 固定代理 `/api`、`/socket.io` 到 Render，不能让浏览器跨站直连。Pages 构建使用 `VITE_AUTH_MODE=api`、`VITE_API_BASE_URL=/api`；Render 使用 `NODE_ENV=production`、`CLIENT_ORIGIN=https://liangmutrace.pages.dev`。
+- Pages 代理保留 Cookie/Set-Cookie、Origin/Referer 和 CSRF/期待用户头，API 不缓存，SSE 正文直接流转，Socket polling/Upgrade 共用同源 Cookie；后端认证与来源检查保持生效。代理清理可伪造的 Forwarded/X-Forwarded-*，不因此启用宽泛的 TRUST_PROXY。当前仍保持 off，匿名/登录 IP 限流可能合并到代理连接 IP；认证后按账号限流不受影响。实际 Pages/Render 发布与手机浏览器仍须分别验收。
 
 ## 初始化数据库
 
