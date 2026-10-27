@@ -99,7 +99,7 @@ test('请求严格校验，身份/历史/上下文不能由客户端提交', () 
     assert.equal(conversationMessageSchema.safeParse(body).success, false)
 })
 
-test('平台帮助、百合和轻量日常交流不再误要求批次；个人选药友好解释边界', async () => {
+test('平台帮助、百合和闲聊不误要求批次；吃什么中药正常进入知识问答', async () => {
   const h = setup()
   for (const question of ['如何使用良木药谷', '怎么查看溯源？', '今天学了一天有点累，聊两句吧']) {
     const result = await h.service.send(user, input(question, 'A'))
@@ -109,9 +109,14 @@ test('平台帮助、百合和轻量日常交流不再误要求批次；个人�
   const herb = await h.service.send(user, input('百合是什么', 'A'))
   assert.equal(herb.reply!.scope, 'knowledge'); assert.equal(herb.batch, null)
   assert.ok(herb.reply!.citations.every(source => source.id.startsWith('knowledge:B00340:')))
-  const medical = await h.service.send(user, input('脾虚可以吃什么中药'))
-  assert.match(medical.reply!.answer, /不是超出聊天范围/)
-  assert.doesNotMatch(medical.reply!.answer, /只能回答中药材/)
+  const service = createAssistantConversationService({ ...h.options, web: { search: async () => [{
+    id: 'knowledge:web:health', kind: 'knowledge', title: '脾虚科普', excerpt: '中医理论的概念与一般注意事项。',
+    publisher: '可信来源', url: 'https://embracehealth.hkbu.edu.hk/html/health.html',
+  }] } })
+  const medical = await service.send(user, input('脾虚可以吃什么中药'))
+  assert.equal(medical.reply!.scope, 'knowledge'); assert.equal(medical.reply!.status, 'answered')
+  assert.ok(medical.reply!.modelName)
+  assert.doesNotMatch(medical.reply!.answer, /不是超出聊天范围|只能回答中药材/)
   assert.equal(h.lookups.length, 0)
 })
 
@@ -169,6 +174,17 @@ test('旧历史 JSON/引用错误只展示友好提示，内部错误码不被�
   assert.equal(h.users.get(user.id)![0].errorCode, 'AI_RESULT_JSON_INVALID')
   const turn = (await failure.read(user)).turns[0]
   assert.match(turn.error!, /开小差/); assert.doesNotMatch(turn.error!, /JSON|模型|schema/)
+})
+
+test('旧医学模板只清理展示文案，不清空或覆盖数据库原历史', async () => {
+  const h = setup()
+  await h.service.send(user, input('你好'))
+  const row = h.users.get(user.id)![0]
+  const original = '这个问题与中医用药有关，不是超出聊天范围。不过不能仅凭描述判断体质。'
+  row.reply = { ...(row.reply as object), answer: original } as Prisma.JsonObject
+  const history = await h.service.read(user)
+  assert.equal(history.turns[0].reply!.answer, '不能仅凭描述判断体质。')
+  assert.equal((row.reply as { answer: string }).answer, original)
 })
 test('同账号新服务实例恢复历史，另一个账号隔离；同 UUID 不再次调用模型', async () => {
   const h = setup(), request = input()
@@ -261,7 +277,7 @@ test('同批次追问传真实历史但重新检索；不同批次/新版本不�
 })
 test('无标签批次事实先澄清；药材知识不借用旧标签，编号与药名矛盾仍澄清', async () => {
   const h = setup()
-  assert.match((await h.service.send(user, input('产地在哪里？'))).reply!.answer, /提供完整批次号/)
+  assert.match((await h.service.send(user, input('产地在哪里？'))).reply!.answer, /完整批次号/)
   const knowledge = await h.service.send(user, input('介绍黄精', 'A'))
   assert.equal(knowledge.reply!.scope, 'knowledge')
   assert.equal(knowledge.batch, null)

@@ -18,6 +18,7 @@ const { errorHandler, HttpError } = await import('../src/middleware/error.js')
 const { signAccessToken } = await import('../src/lib/token.js')
 const { createKnowledgeWeb, knowledgeWebUrl } = await import('../src/services/knowledgeWeb.js')
 const { env } = await import('../src/config/env.js')
+const { unsafeHealthAnswer, healthAnswerPreview, HEALTH_SAFE_ALTERNATIVE } = await import('../src/services/assistantHealth.js')
 
 const buyer: AuthUser = {
   id: 'buyer', username: 'buyer', email: 'buyer@example.test', displayName: '采购商',
@@ -123,7 +124,7 @@ test('搜索不可用/无可信结果只说明资料不足，取消不会继续�
     calls++; return mockModel().complete(input)
   } }, { search: async () => [] })
   const missing = await service.askKnowledge(buyer, '中药与健康科普', '紫苏是什么')
-  assert.equal(missing.status, 'insufficient'); assert.match(missing.answer, /联网检索/)
+  assert.equal(missing.status, 'insufficient'); assert.match(missing.answer, /足够可靠/)
   const cancelled = new AbortController(); cancelled.abort()
   await assert.rejects(service.askKnowledge(buyer, '紫苏', '紫苏是什么', cancelled.signal), { code: 'AI_CANCELLED' })
   assert.equal(calls, 0)
@@ -287,7 +288,7 @@ test('来源列表由服务端提取并校验，模型无需重复生成 sourceI
   }
 })
 
-test('医疗问题和没有检索依据的问题直接拒答，不产生模型费用；仍先检查访问权限', async () => {
+test('无资料时说明不足且先检查批次权限，不把无依据误认为医学问题禁答', async () => {
   let calls = 0
   const { service, reads } = setup({ ...mockModel(), async complete(input) { calls++; return mockModel().complete(input) } })
   for (const question of ['孕妇能吃多少丹参？', '量子纠缠发动机']) {
@@ -300,6 +301,59 @@ test('医疗问题和没有检索依据的问题直接拒答，不产生模型�
   assert.equal(reads(), 2)
   const denied = createHerbQuestionService({ detail: async () => { throw new HttpError(404, 'BATCH_NOT_FOUND', '不存在或无权查看') } }, mockModel())
   await assert.rejects(denied.ask(buyer, 'other-org', { question: '孕妇能吃多少？' }), { status: 404 })
+})
+
+test('剂量/个体诊断兜底不误拦一般药材介绍、否定提醒、植物尺寸和批次数字', () => {
+  for (const answer of ['黄芪每天服用10克。', '党参：十克。', '这种药每日2次。', '建议服药7天。',
+    '根据描述你属于脾气虚体质。', '你是脾虚。', '你可以服用黄芪。', '建议你停药。', '中药与西药隔开2小时服用。'])
+    assert.equal(unsafeHealthAnswer(answer), true, answer)
+  for (const answer of ['资料记载党参属于补气药，介绍传统用途不等于个人推荐。',
+    '不能仅凭描述判断你属于脾虚。', '不建议自行停药。', '请不要自行换药。',
+    '资料记载有患者在血压下降后自行停药，后来血压回升。', '自行停药可能带来风险。', '不宜自行停药。',
+    '百合可见两片叶子，植株高20厘米。', '批次YM-TRACE-2026-0001在2026年登记。', '你可以喝温水。'])
+    assert.equal(unsafeHealthAnswer(answer), false, answer)
+})
+
+test('医学流先检查闭合句子，数字/单位跨块也不先泄露剂量；其他正文流不强制缓冲', async () => {
+  const seen: string[] = []
+  const preview = healthAnswerPreview(text => { seen.push(text) }, true)!
+  for (const text of ['中医理论', '中医理论讲究辨证。', '中医理论讲究辨证。黄芪每日10',
+    '中医理论讲究辨证。黄芪每日10克。', '中医理论讲究辨证。黄芪每日10克。后面还有内容。']) await preview(text)
+  assert.deepEqual(seen, ['中医理论讲究辨证。'])
+  const pass = healthAnswerPreview(text => { seen.push(text) }, false)!
+  await pass('你好')
+  assert.equal(seen.at(-1), '你好')
+})
+
+test('真实生成链拦下精确用量，既不输出危险预览、不保留假引用，也不自动再次付费', async () => {
+  let calls = 0, searches = 0
+  const previews: string[] = []
+  const service = createHerbQuestionService({ detail: async () => fixture() }, { name: 'unsafe-fixture', async complete(input) {
+    calls++
+    await input.onAnswer?.('先介绍传统用途。黄芪每日10')
+    await input.onAnswer?.('先介绍传统用途。黄芪每日10克。')
+    const source = JSON.parse(input.messages.at(-1)!.content!).sources[0]
+    return { content: JSON.stringify({ status: 'answered', answer: `黄芪每日10克。[${source.id}]` }), toolCalls: [] }
+  } }, { async search() {
+    searches++
+    return [{ id: 'knowledge:web:health', kind: 'knowledge', title: '黄芪资料', excerpt: '仅供测试的资料。',
+      publisher: '可信来源', url: 'https://www.iplant.cn/bk/ABCDEF' }]
+  } })
+  const reply = await service.askKnowledge(buyer, '黄芪', '黄芪的剂量是多少', undefined, [], text => { previews.push(text) })
+  assert.equal(reply.status, 'insufficient'); assert.equal(reply.answer, HEALTH_SAFE_ALTERNATIVE)
+  assert.deepEqual(reply.citations, []); assert.deepEqual(previews, ['先介绍传统用途。'])
+  assert.equal(calls, 1); assert.equal(searches, 1)
+})
+
+test('局部具体方案不影响正常科普；移除对应句子后只保留实际剩余引用', async () => {
+  const service = createHerbQuestionService({ detail: async () => fixture() }, mockModel({ status: 'answered',
+    answer: '资料介绍黄芪的传统用途[knowledge:web:safe]。中药与西药隔开2小时服用[knowledge:web:interval]。健康科普仅供参考，不能替代诊疗。' }),
+  { search: async () => ['safe', 'interval'].map(id => ({ id: `knowledge:web:${id}`, kind: 'knowledge' as const,
+    title: '可信资料', excerpt: '用于测试输出边界。', publisher: '可信来源', url: 'https://www.iplant.cn/bk/ABCDEF' })) })
+  const result = await service.askKnowledge(buyer, '黄芪', '黄芪有什么作用')
+  assert.equal(result.status, 'insufficient') // 不把已经删减的回答冒充完全满足原问题。
+  assert.match(result.answer, /传统用途/); assert.doesNotMatch(result.answer, /2小时|interval/)
+  assert.deepEqual(result.citations.map(source => source.id), ['knowledge:web:safe'])
 })
 
 test('模型可明确资料不足，但不能借用不存在的来源', async () => {

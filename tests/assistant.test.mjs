@@ -150,12 +150,13 @@ test('独立知识契约允许受信植物智来源，但拒绝混入批次来�
     assert.throws(() => parseAssistantTurn(mutate(source)), { code: 'INVALID_RESPONSE' })
   }
 })
-test('生成中正文单独标为未校验，不暴露复制/来源；停止后不展示半成品', async () => {
+test('生成中使用客户文案，不暴露校验状态或复制来源；停止后不展示半成品', async () => {
   const { default: AssistantMessages } = await vite.ssrLoadModule('/src/components/assistant/AssistantMessages.tsx')
   const pending = { id: 'generating', question: '你好', batch: null, status: 'pending', preview: '第一段正文' }
   const html = renderToString(createElement(AssistantMessages, { turns: [pending], busy: true, retry: () => undefined }))
-  assert.match(html, /第一段正文|生成中/)
-  assert.match(html, /尚未校验/)
+  assert.match(html, /第一段正文|正在整理回答/)
+  assert.match(html, /正在整理回答/)
+  assert.doesNotMatch(html, /尚未校验|未校验|后台校验/)
   assert.doesNotMatch(html, /复制回答|查看依据/)
   const stopped = renderToString(createElement(AssistantMessages, { turns: [{ ...pending, status: 'stopped' }], busy: false, retry: () => undefined }))
   assert.match(stopped, /已停止回答/); assert.doesNotMatch(stopped, /第一段正文/)

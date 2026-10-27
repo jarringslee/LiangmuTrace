@@ -9,8 +9,9 @@ import { createAssistantStore, type AssistantStore, type StoredAssistantTurn } f
 import type { AuthService, AuthUser } from './auth.js'
 import type { BatchDetailRecord, BatchService } from './batches.js'
 import type { QuestionSource } from './knowledgeSearch.js'
-import { allowedGeneral, batchFactTopic, DOMAIN_REFUSAL, followupTopic, knowledgeTopic, medicalTopic, MEDICAL_REFUSAL, mentionedHerbs, offTopic, platformTopic } from './assistantDomain.js'
-import { assistantErrorMessage } from './assistantErrors.js'
+import { allowedGeneral, batchFactTopic, DOMAIN_REFUSAL, followupTopic, knowledgeTopic, mentionedHerbs, offTopic, platformTopic } from './assistantDomain.js'
+import { assistantErrorMessage, customerAssistantText } from './assistantErrors.js'
+import { healthTopic } from './assistantHealth.js'
 import type { KnowledgeWeb } from './knowledgeWeb.js'
 
 export const conversationMessageSchema = z.object({
@@ -37,7 +38,7 @@ function contextHistory(records: StoredAssistantTurn[], user: AuthUser, batch: B
           && (allowedGeneral(turn.question) || followupTopic.test(turn.question))))
     .slice(-4).flatMap((turn): ChatMessage[] => {
       const reply = turn.reply as unknown as Reply
-      const answer = reply.answer.slice(0, 1_000)
+      const answer = customerAssistantText(reply.answer).slice(0, 1_000)
       return [{ role: 'user', content: turn.question }, { role: 'assistant',
         // JSON 模式的历史助手消息也保持 JSON，避免纯文本示例干扰结构化输出。
         content: JSON.stringify({ status: reply.status,
@@ -89,7 +90,8 @@ export function createAssistantConversationService(options: {
     const interrupted = turn.status === 'pending' && Date.now() - turn.createdAt.getTime() > 65_000
     return { id: turn.requestId, question: turn.question, batch: turn.batchLabel as BatchLabel | null,
       status: interrupted ? 'stopped' : turn.status, createdAt,
-      ...(turn.status === 'done' && turn.reply ? { reply: turn.reply as unknown as Reply } : {}),
+      ...(turn.status === 'done' && turn.reply ? { reply: { ...turn.reply as unknown as Reply,
+        answer: customerAssistantText((turn.reply as unknown as Reply).answer) } } : {}),
       ...(turn.status === 'error' ? { error: assistantErrorMessage(turn.errorCode) } : {}) }
   }
   const read = async (user: AuthUser) => {
@@ -125,7 +127,7 @@ export function createAssistantConversationService(options: {
       && turn.actorRole === user.role && turn.actorOrganizationId === user.organizationId)
     const lastReply = latest?.reply as unknown as Reply | undefined
     const followup = followupTopic.test(plain)
-    const medical = medicalTopic.test(plain), unrelated = offTopic.test(plain)
+    const health = healthTopic.test(plain), unrelated = offTopic.test(plain)
     // “如何使用审核功能”是平台帮助；“平台登记的本批次产地”仍是具体事实。
     const systemHelp = platformTopic.test(plain) && !codes.length
       && (!names.length || /平台|系统|良木/u.test(plain))
@@ -137,14 +139,15 @@ export function createAssistantConversationService(options: {
       && latest?.requestedIdentifier === input.batchIdentifier) herbName = lastReply.herbName ?? null
     // 未收录药材/中医概念也进入知识检索，不能因为字典没有药名而要求批次。
     const deictic = /^(?:这|它|这个|那个|这味药)(?:是|叫|什么|药材|\s|[?？。])*$/u.test(plain)
-    if (!herbName && !explicitBatch && !systemHelp && !generalFollowup && !deictic && knowledgeTopic.test(plain)) herbName = '中药与健康科普'
+    if (!herbName && !explicitBatch && !systemHelp && (!generalFollowup || health) && !deictic
+      && (health || knowledgeTopic.test(plain))) herbName = '中药与健康科普'
     const subject = explicitBatch || !herbName && !systemHelp && !generalFollowup
       && (/产地|来源|外观/u.test(plain) || !!input.batchIdentifier && (deictic || followup && lastReply?.scope === 'batch'))
     let batch: BatchDetailRecord | null = null
     let candidates: BatchCandidate[] = []
     let clarification: string | null = codes.length > 1 ? '一次先查询一个批次，请明确选择一个批次号。' : null
     let identifier = codes[0] ?? input.batchIdentifier
-    if (!clarification && !medical && !unrelated && explicitBatch && !codes.length && names.length === 1 && input.batchIdentifier) {
+    if (!clarification && !unrelated && explicitBatch && !codes.length && names.length === 1 && input.batchIdentifier) {
       // 名称与当前标签一致就用已明确选择的批次；不一致才按药名另查候选。
       try {
         const selected = await options.batches.detail(user, input.batchIdentifier)
@@ -154,7 +157,7 @@ export function createAssistantConversationService(options: {
       }
     }
     // 药名+“溯源/批次”先按同一业务权限搜索，不借用不相干的旧标签。
-    if (!batch && !clarification && !medical && !unrelated && explicitBatch && !codes.length && names.length && options.batches.list) {
+    if (!batch && !clarification && !unrelated && explicitBatch && !codes.length && names.length && options.batches.list) {
       if (names.length > 1) clarification = '一次先查询一种药材的批次，请明确药材名称或完整查询码。'
       else {
         const result = await options.batches.list(user, { page: 1, pageSize: 6, search: names[0] })
@@ -162,20 +165,19 @@ export function createAssistantConversationService(options: {
         if (matches.length === 1 && result.pagination.total === 1) identifier = matches[0].id
         else if (matches.length) {
           candidates = matches.slice(0, 5).map(({ id, herbName, batchNo, traceCode }) => ({ id, herbName, batchNo, traceCode }))
-          clarification = '找到了以下可查看批次，请选择查看档案，或复制查询码发给我；我不会自行猜测你指的是哪一批。'
+          clarification = '找到了以下批次，请选择查看档案，或复制查询码发给我。'
         } else clarification = '当前没有找到可查看的对应批次。可以提供完整批次号或溯源码再试；药材科普不需要提供批次。'
       }
     }
-    if (!clarification && !medical && !unrelated && subject) {
-      if (!identifier) clarification = '请从药材详情带入批次，或在问题中提供完整批次号/溯源码；列表、扫码和输码均可进入，不要求先扫码。'
+    if (!clarification && !unrelated && subject) {
+      if (!identifier) clarification = '请输入完整批次号或溯源码，或从药材详情中选择批次。'
       else {
         batch ??= await options.batches.detail(user, identifier)
         if (names.some((name) => name !== batch!.herbName))
-          clarification = '问题提到其他药材，请切换对应批次或提供完整批次号，不能借用当前批次资料回答。'
+          clarification = '药材名称与当前批次不一致，请切换对应批次或提供完整查询码。'
       }
     }
-    if (medical) { clarification = MEDICAL_REFUSAL; herbName = null }
-    else if (unrelated) { clarification = DOMAIN_REFUSAL; herbName = null; batch = null }
+    if (unrelated) { clarification = DOMAIN_REFUSAL; herbName = null; batch = null }
     signal?.throwIfAborted()
     const { turn, claimed } = await store.begin(user, { requestId: input.requestId, question: input.question,
       requestedIdentifier: input.batchIdentifier, batch })

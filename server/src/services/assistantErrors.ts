@@ -1,5 +1,14 @@
 import { HttpError } from '../middleware/error.js'
 
+/** 仅清理旧版固定回复的内部说明，读取时转换，不改写数据库历史。 */
+export function customerAssistantText(answer: string): string {
+  const text = answer.replace(/^这个问题与中医用药有关，不是超出聊天范围。不过/u, '')
+    .replace('；列表、扫码和输码均可进入，不要求先扫码。', '。')
+    .replace('，不能借用当前批次资料回答。', '。')
+    .replace('；我不会自行猜测你指的是哪一批。', '。')
+  return text || '你可以换个更具体的问法试试。'
+}
+
 export function assistantErrorMessage(code: string | null | undefined): string {
   switch (code) {
     case 'AI_TIMEOUT': return '这次回答等得有点久，请稍后再问一次吧～'

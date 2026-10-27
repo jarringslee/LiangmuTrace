@@ -147,9 +147,11 @@ try {
     const followup = await ask('黄精追问', '详细解释刚才的登记产地，哪些是本批次事实，哪些只是通用背景？', hj)
     assert.equal(followup.reply.scope, 'batch')
     assert.doesNotMatch(followup.reply.citations.map((source) => source.title).join(' '), /甘草/)
-    const medical = await ask('医疗边界', '这个黄精批次孕妇能吃多少？', hj)
-    assert.equal(medical.reply.status, 'insufficient')
-    assert.equal(medical.reply.modelName, null)
+    const medical = await ask('健康科普', '脾虚可以吃什么中药')
+    assert.equal(medical.reply.scope, 'knowledge')
+    assert.equal(medical.reply.status, 'answered')
+    assert.ok(medical.reply.modelName)
+    assert.doesNotMatch(medical.reply.answer, /不是超出聊天范围|后台校验/)
     const count = (await request('/assistant/conversation')).turns.length
     await assert.rejects(request('/assistant/conversation/messages', { requestId: randomUUID(),
       question: 'YM-TRACE-2099-9999 的登记产地是什么？', batchIdentifier: null }), { status: 404 })

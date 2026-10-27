@@ -20,9 +20,8 @@ export default function AssistantMessages({ turns, busy, retry }: {
       </div>
       <div className="assistant-message assistant-message--reply">
         <Text strong>良木助手</Text>
-        {turn.status === 'pending' && <div><Spin size="small" /> 正在回答…</div>}
+        {turn.status === 'pending' && <div><Spin size="small" /> 正在整理回答…</div>}
         {turn.status === 'pending' && turn.preview && <>
-          <Text type="secondary">生成中，完整回答与依据尚未校验</Text>
           <Suspense fallback={<Paragraph>{turn.preview}</Paragraph>}>
             <AssistantMarkdown>{turn.preview}</AssistantMarkdown>
           </Suspense>

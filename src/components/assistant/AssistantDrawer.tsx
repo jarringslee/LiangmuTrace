@@ -49,7 +49,7 @@ export default function AssistantDrawer() {
                                 value.startsWith(prefix) ? value : (prefix + value).slice(0, 500))}>插入批次前缀</Button>
                             <Text copyable={{ text: prefix }}>复制前缀</Text>
                             <Text type="secondary">可以普通聊天；批次问题按标签或明确编号查询。</Text>
-                        </Space> : <Text type="secondary">可日常聊天、问中药与健康科普；知识库优先，缺资料时联网检索。查档案可输入“黄芪的溯源信息”或完整查询码。</Text>}
+                        </Space> : <Text type="secondary">可日常聊天、问中药与健康科普；查档案可输入“黄芪的溯源信息”或完整查询码。</Text>}
                     </div>
                 </div>
                 {historyLoading && <Text type="secondary">正在同步聊天记录…</Text>}
@@ -57,7 +57,7 @@ export default function AssistantDrawer() {
                     description={historyError}
                     action={<Button size="small" onClick={reloadHistory}>重试加载</Button>} />}
                 {conversationBusy && !isPending && <Text type="secondary">
-                    服务器仍有一条提问在处理，稍后会自动补查记录，不会重复调用模型。
+                    上一条问题还在处理中，请稍候。
                 </Text>}
                 <div className="assistant-history" aria-live="polite">
                     <AssistantMessages turns={turns} busy={blocked}
@@ -83,7 +83,7 @@ export default function AssistantDrawer() {
                     </Space>
                     <div className="assistant-history-note">
                         <Text type="secondary">{historyMode === 'api'
-                            ? '本人历史已保存，关闭不删除；最近 40 轮，上下文最多 4 轮。'
+                            ? '本人历史已保存，关闭窗口后可继续查看。'
                             : historyMode === 'demo'
                                 ? '离线演示：仅本次登录保留历史，不调用 AI。'
                                 : '加载后可发送；关闭会停止未完成请求。'}</Text>

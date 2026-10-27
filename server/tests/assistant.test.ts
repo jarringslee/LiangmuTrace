@@ -66,15 +66,18 @@ test('功能提示不再错报聊天室未实现，单轮/持久化历史能力�
   assert.doesNotMatch(prompts[1], /本接口为单轮聊天/)
 })
 
-test('问题严格校验，不接受伪造身份/批次/历史，医疗问题直接拒答', async () => {
+test('问题严格校验；医学问题可生成一般说明，不再关键词命中直接拒答', async () => {
   for (const body of [{ question: ' ' }, { question: 'a'.repeat(501) }, { question: '你好', role: 'admin' },
     { question: '你好', batchId: 'other' }, { question: '你好', messages: [] }]) {
     assert.equal(assistantQuestionSchema.safeParse(body).success, false)
   }
-  const service = createAssistantService({ ...mockModel(), async complete() { throw new Error('must not call') } })
+  const service = createAssistantService({ ...mockModel(), async complete(request) {
+    assert.match(request.messages[0].content!, /不生成具体用药剂量/)
+    return { content: JSON.stringify({ status: 'answered', answer: '孕期用药需要专业评估，可以先了解一般注意事项。' }), toolCalls: [] }
+  } })
   const reply = await service.ask(user, { question: '孕妇能吃多少丹参？' })
-  assert.equal(reply.status, 'insufficient')
-  assert.equal(reply.modelName, null)
+  assert.equal(reply.status, 'answered')
+  assert.equal(reply.modelName, 'mock-general-model')
   assert.deepEqual(reply.citations, [])
 })
 
