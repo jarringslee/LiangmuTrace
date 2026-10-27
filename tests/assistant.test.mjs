@@ -45,6 +45,17 @@ test('普通回复按问题/模式/来源/批次/模型/日期校验，白名单
   }
 })
 
+test('未查到编号的正常终态可解析并显示，不标错、不提供失败重试按钮', async () => {
+  const { parseAssistantTurn } = await vite.ssrLoadModule('/src/services/assistantHistoryContract.ts')
+  const question = 'YM-TRACE-2026-9999', answer = '未查到该溯源码相关的药材批次信息，请核对后再试～'
+  const turn = parseAssistantTurn({ id: 'missing-code', question, batch: null, status: 'done', createdAt: reply.createdAt,
+    reply: { ...reply, question, answer, status: 'insufficient', modelName: null } })
+  const { default: AssistantMessages } = await vite.ssrLoadModule('/src/components/assistant/AssistantMessages.tsx')
+  const html = renderToString(createElement(AssistantMessages, { turns: [turn], busy: false, retry: () => undefined }))
+  assert.match(html, /未查到该溯源码/)
+  assert.doesNotMatch(html, /开小差|ant-typography-danger|重新提问/)
+})
+
 test('批次候选白名单保留查询码，不接受重复/非法候选或额外私有字段', () => {
   const candidate = { ...batch, traceCode: 'YM-TRACE-A', internal: 'secret' }
   const value = { ...reply, status: 'insufficient', modelName: null, candidates: [candidate] }

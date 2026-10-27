@@ -152,13 +152,13 @@ try {
     assert.equal(medical.reply.status, 'answered')
     assert.ok(medical.reply.modelName)
     assert.doesNotMatch(medical.reply.answer, /不是超出聊天范围|后台校验/)
-    const count = (await request('/assistant/conversation')).turns.length
-    await assert.rejects(request('/assistant/conversation/messages', { requestId: randomUUID(),
-      question: 'YM-TRACE-2099-9999 的登记产地是什么？', batchIdentifier: null }), { status: 404 })
-    assert.equal((await request('/assistant/conversation')).turns.length, count)
+    const missing = await ask('未知编号', 'YM-TRACE-2099-9999 的登记产地是什么？')
+    assert.equal(missing.reply.status, 'insufficient'); assert.equal(missing.reply.modelName, null)
+    assert.equal(missing.batch, null)
+    assert.match(missing.reply.answer, /未查到该溯源码/)
     const replayed = await request('/assistant/conversation/messages', cases[0].input)
     assert.deepEqual(replayed.turn, cases[0].turn)
-    console.log('未知编号返回 404、不新增历史；同 UUID 重放原结果。越权路径由独立权限回归覆盖。')
+    console.log('未知编号正常提示未查到并保存历史、不调用模型；同 UUID 重放原结果。越权路径由独立权限回归覆盖。')
   }
   // 重新获取 Token，证明读取来自该账号数据库，而非沿用旧客户端气泡。
   await login()

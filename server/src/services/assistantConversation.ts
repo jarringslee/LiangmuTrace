@@ -13,6 +13,7 @@ import { allowedGeneral, batchFactTopic, DOMAIN_REFUSAL, followupTopic, knowledg
 import { assistantErrorMessage, customerAssistantText } from './assistantErrors.js'
 import { healthTopic } from './assistantHealth.js'
 import type { KnowledgeWeb } from './knowledgeWeb.js'
+import { BATCH_NOT_FOUND, INCOMPLETE_BATCH_CODE, readAssistantBatchCodes, TRACE_NOT_FOUND } from './assistantBatchQuery.js'
 
 export const conversationMessageSchema = z.object({
   requestId: z.string().uuid(), question: z.string().trim().min(2).max(500),
@@ -35,6 +36,8 @@ function contextHistory(records: StoredAssistantTurn[], user: AuthUser, batch: B
     && (batch ? turn.batchId === batch.id && turn.batchVersion === batch.version
       : herbName ? (turn.reply as unknown as Reply).scope === 'knowledge' && (turn.reply as unknown as Reply).herbName === herbName
         : !turn.batchId && !turn.batchLabel && !(turn.reply as unknown as Reply).candidates?.length && (turn.reply as unknown as Reply).scope === 'general'
+          // 固定的查码澄清不作为闲聊示例，避免下一条普通数字被延续成查询码。
+          && (turn.reply as unknown as Reply).modelName !== null
           && (allowedGeneral(turn.question) || followupTopic.test(turn.question))))
     .slice(-4).flatMap((turn): ChatMessage[] => {
       const reply = turn.reply as unknown as Reply
@@ -119,7 +122,7 @@ export function createAssistantConversationService(options: {
     if (previous) return replay(previous)
 
     // 明确编号优先于旧标签；多个编号不猜测、不跨组织枚举。
-    const codes = [...new Set((input.question.match(/\bYM-(?:[A-Z0-9]+-)*[A-Z0-9]+\b/gi) ?? []).map((code) => code.toUpperCase()))]
+    const { codes, malformed } = readAssistantBatchCodes(input.question)
     const plain = input.question.replace(/^对于[^，,\n]{1,150}[，,]\s*/u, '').trim()
     const names = mentionedHerbs(plain)
     const records = (await store.read(user.id)).turns
@@ -145,7 +148,8 @@ export function createAssistantConversationService(options: {
       && (/产地|来源|外观/u.test(plain) || !!input.batchIdentifier && (deictic || followup && lastReply?.scope === 'batch'))
     let batch: BatchDetailRecord | null = null
     let candidates: BatchCandidate[] = []
-    let clarification: string | null = codes.length > 1 ? '一次先查询一个批次，请明确选择一个批次号。' : null
+    let clarification: string | null = malformed ? INCOMPLETE_BATCH_CODE
+      : codes.length > 1 ? '一次先查询一个批次，请明确选择一个批次号。' : null
     let identifier = codes[0] ?? input.batchIdentifier
     if (!clarification && !unrelated && explicitBatch && !codes.length && names.length === 1 && input.batchIdentifier) {
       // 名称与当前标签一致就用已明确选择的批次；不一致才按药名另查候选。
@@ -153,7 +157,7 @@ export function createAssistantConversationService(options: {
         const selected = await options.batches.detail(user, input.batchIdentifier)
         if (selected.herbName === names[0]) batch = selected
       } catch (error) {
-        if (!(error instanceof HttpError && error.status === 404)) throw error
+        if (!(error instanceof HttpError && error.status === 404 && error.code === 'BATCH_NOT_FOUND')) throw error
       }
     }
     // 药名+“溯源/批次”先按同一业务权限搜索，不借用不相干的旧标签。
@@ -172,8 +176,13 @@ export function createAssistantConversationService(options: {
     if (!clarification && !unrelated && subject) {
       if (!identifier) clarification = '请输入完整批次号或溯源码，或从药材详情中选择批次。'
       else {
-        batch ??= await options.batches.detail(user, identifier)
-        if (names.some((name) => name !== batch!.herbName))
+        try { batch ??= await options.batches.detail(user, identifier) } catch (error) {
+          // 初次定位无结果是正常业务回复；不存在与无权限仍同文案，不泄露资源是否存在。
+          // 仅处理明确的批次404，连接故障、身份失效等真实异常继续抛出。
+          if (!(error instanceof HttpError && error.status === 404 && error.code === 'BATCH_NOT_FOUND')) throw error
+          clarification = identifier.toUpperCase().startsWith('YM-TRACE-') ? TRACE_NOT_FOUND : BATCH_NOT_FOUND
+        }
+        if (batch && names.some((name) => name !== batch!.herbName))
           clarification = '药材名称与当前批次不一致，请切换对应批次或提供完整查询码。'
       }
     }

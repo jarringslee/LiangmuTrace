@@ -21,6 +21,7 @@ const { createAssistantService } = await import('../src/services/assistant.js')
 const { createAssistantRouter } = await import('../src/routes/assistant.js')
 const { HttpError, errorHandler } = await import('../src/middleware/error.js')
 const { signAccessToken } = await import('../src/lib/token.js')
+const { readAssistantBatchCodes, TRACE_NOT_FOUND, INCOMPLETE_BATCH_CODE } = await import('../src/services/assistantBatchQuery.js')
 
 const user: AuthUser = { id: 'buyer', role: 'buyer', username: 'buyer', email: 'buyer@example.test',
   displayName: '采购商', organizationId: null, organization: null }
@@ -242,7 +243,7 @@ test('出现平台/系统不应覆盖具体批次事实意图，功能帮助仍�
   }
 })
 
-test('明确批次号/溯源码覆盖旧标签，多个编号澄清，无权限不入库不调用模型', async () => {
+test('明确编号覆盖旧标签，多编号澄清；不可见批次正常回复未查到，不泄露档案', async () => {
   const h = setup()
   const result = await h.service.send(user, input('对于 YM-B，这是什么', 'A'))
   assert.equal(result.batch!.id, 'B')
@@ -255,9 +256,95 @@ test('明确批次号/溯源码覆盖旧标签，多个编号澄清，无权限�
   assert.equal(h.requests.length, before); assert.equal(h.lookups.length, reads)
   h.denied.add('B')
   const count = (await h.store.read(user.id)).turns.length
-  await assert.rejects(h.service.send(user, input('YM-B 的来源？')), { status: 404 })
-  assert.equal((await h.store.read(user.id)).turns.length, count)
+  const unavailable = await h.service.send(user, input('YM-B 的来源？'))
+  assert.equal(unavailable.status, 'done'); assert.match(unavailable.reply!.answer, /未查到/)
+  assert.equal(unavailable.batch, null); assert.deepEqual(unavailable.reply!.citations, [])
+  assert.equal((await h.store.read(user.id)).turns.length, count + 1)
   assert.equal(h.requests.length, before)
+})
+
+test('编号提取覆盖大小写/全角/Unicode横线/复制空格/零宽字符/链接，残缺不截取成有效码', () => {
+  const expected = ['YM-TRACE-2026-0001']
+  for (const text of ['ym-trace-2026-0001', 'ＹＭ－ＴＲＡＣＥ－２０２６－０００１', 'YM–TRACE–2026–0001',
+    'YM - TRACE - 2026 - 0001', 'YM-TRA\u200bCE-2026-0001', '请查【YM-TRACE-2026-0001】',
+    'https://liangmutrace.pages.dev/public/trace/YM-TRACE-2026-0001?from=qr'])
+    assert.deepEqual(readAssistantBatchCodes(text), { codes: expected, malformed: false }, text)
+  for (const text of ['YM-TRACE-2026-', 'YM--TRACE-2026-0001', 'YM_TRACE_2026_0001', 'YMTRACE20260001',
+    'YM-TRACE-2026-0001_extra', '溯源码：123456', 'YM-A 和 YM-TRACE-'])
+    assert.equal(readAssistantBatchCodes(text).malformed, true, text)
+  assert.deepEqual(readAssistantBatchCodes('12345678'), { codes: [], malformed: false })
+  assert.deepEqual(readAssistantBatchCodes('YM-A - YM-B').codes, ['YM-A', 'YM-B'])
+  assert.deepEqual(readAssistantBatchCodes('YM-2026-YM-GC-0001').codes, ['YM-2026-YM-GC-0001'])
+})
+
+test('错误溯源码是普通终态、无模型/来源/标签；只改一位也不回退旧标签或模糊猜码', async () => {
+  const h = setup()
+  h.batches.get('A')!.traceCode = 'YM-TRACE-2026-0001'
+  for (const question of ['YM-TRACE-2026-0002', '查一下YM-TRACE-2026-0002的产地', 'YM-TRACE-2026-9999',
+    'ym-trace-2026-0002', 'ＹＭ－ＴＲＡＣＥ－２０２６－０００２']) {
+    const request = input(question, 'A')
+    const turn = await h.service.send(user, request)
+    assert.equal(turn.status, 'done'); assert.equal(turn.reply!.status, 'insufficient')
+    assert.equal(turn.reply!.answer, TRACE_NOT_FOUND); assert.equal(turn.reply!.modelName, null)
+    assert.equal(turn.batch, null); assert.deepEqual(turn.reply!.citations, [])
+    const reads = h.lookups.length
+    assert.deepEqual(await h.service.send(user, request), turn) // 重放不再查库/调用模型。
+    assert.equal(h.lookups.length, reads)
+    assert.deepEqual((await h.service.read(user)).turns.at(-1), turn)
+  }
+  assert.equal(h.requests.length, 0)
+  assert.ok(!h.lookups.includes('A'))
+})
+
+test('残缺编号/多个编号不触发查询或生成，普通数字仍走正常交流', async () => {
+  const h = setup()
+  for (const question of ['YM-TRACE-2026-', 'YMTRACE20260001', '溯源码：123456']) {
+    const turn = await h.service.send(user, input(question, 'A'))
+    assert.equal(turn.status, 'done'); assert.equal(turn.reply!.answer, INCOMPLETE_BATCH_CODE)
+  }
+  const multiple = await h.service.send(user, input('查YM-TRACE-2026-0001 和 YM-TRACE-2026-0002', 'A'))
+  assert.match(multiple.reply!.answer, /一次先查询一个/)
+  assert.equal(h.lookups.length, 0); assert.equal(h.requests.length, 0)
+  const numbers = await h.service.send(user, input('12345678', 'A'))
+  assert.equal(numbers.reply!.scope, 'general'); assert.equal(numbers.reply!.modelName, 'mock-conversation')
+  assert.equal(h.requests.at(-1)!.length, 2) // 不把前面的固定查码澄清当作闲聊上下文。
+  assert.match(h.requests.at(-1)![0].content!, /无标签数字属于普通聊天/)
+  assert.equal(h.lookups.length, 0)
+})
+
+test('合法码的字符规范化后仍能查到，查法/定义帮助不误触发旧标签查询', async () => {
+  const h = setup()
+  h.batches.get('A')!.traceCode = 'YM-TRACE-2026-0001'
+  const turn = await h.service.send(user, input('ym–trace–2026–0001'))
+  assert.equal(turn.reply!.scope, 'batch'); assert.equal(turn.batch!.id, 'A')
+  assert.ok(JSON.parse(h.requests.at(-1)!.at(-1)!.content!).sources.some((source: { id: string }) => source.id === 'batch:status'))
+  const linked = await h.service.send(user, input('https://liangmutrace.pages.dev/public/trace/YM-TRACE-2026-0001?from=qr'))
+  assert.equal(linked.reply!.scope, 'batch')
+  assert.ok(JSON.parse(h.requests.at(-1)!.at(-1)!.content!).sources.some((source: { id: string }) => source.id === 'batch:status'))
+  h.lookups.length = 0
+  for (const question of ['溯源码是什么', '溯源码查不到怎么办', '怎么查看溯源？']) {
+    assert.equal((await h.service.send(user, input(question, 'A'))).reply!.scope, 'general')
+  }
+  assert.equal(h.lookups.length, 0)
+})
+
+test('四角色查询不存在/不可见编号同文案；其他404、数据库异常和身份失效不能冒充未查到', async () => {
+  for (const role of ['admin', 'grower', 'processor', 'buyer'] as const) {
+    const h = setup(), actor = { ...user, role }
+    h.actors.set(user.id, actor)
+    const service = createAssistantConversationService({ ...h.options, batches: { detail: async () => {
+      throw new HttpError(404, 'BATCH_NOT_FOUND', '内部诊断不可暴露')
+    } } })
+    const turn = await service.send(actor, input('YM-TRACE-2026-9999'))
+    assert.equal(turn.reply!.answer, TRACE_NOT_FOUND); assert.equal(turn.status, 'done')
+  }
+  for (const error of [new HttpError(404, 'OTHER_NOT_FOUND', 'fixture'), new HttpError(503, 'DB_UNAVAILABLE', 'fixture'),
+    new HttpError(403, 'ACCOUNT_DISABLED', 'fixture')]) {
+    const h = setup()
+    const service = createAssistantConversationService({ ...h.options, batches: { detail: async () => { throw error } } })
+    await assert.rejects(service.send(user, input('YM-TRACE-2026-9999')), { code: error.code })
+    assert.equal((await h.store.read(user.id)).turns.length, 0)
+  }
 })
 test('同批次追问传真实历史但重新检索；不同批次/新版本不带旧历史', async () => {
   const h = setup()
@@ -401,6 +488,30 @@ test('会话 HTTP 认证/严格请求/no-store/表缺失提示，拒绝指定其
     const missing = await fetch(`${base}/conversation`, { headers })
     assert.equal(missing.status, 503); assert.equal((await missing.json()).error.code, 'ASSISTANT_STORAGE_NOT_READY')
   } finally { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())) }
+})
+
+test('未知码经 JSON/SSE 都是正常结果且进入历史，不返回 error 或触发模型', async () => {
+  const h = setup(), app = express()
+  app.use(express.json())
+  app.use('/api/assistant', createAssistantRouter({ ...h.options.auth, login: async () => user }, createAssistantService(h.options.model), h.service))
+  app.use(errorHandler)
+  const server = app.listen(0, '127.0.0.1'); await once(server, 'listening')
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/assistant/conversation`
+  const headers = { ...sessionHeaders(await signAccessToken(user.id)), 'Content-Type': 'application/json' }
+  try {
+    const json = await fetch(`${base}/messages`, { method: 'POST', headers, body: JSON.stringify(input('YM-TRACE-2026-9999', 'A')) })
+    assert.equal(json.status, 200)
+    const turn = (await json.json()).turn
+    assert.equal(turn.status, 'done'); assert.equal(turn.reply.answer, TRACE_NOT_FOUND)
+    const stream = await fetch(`${base}/messages/stream`, { method: 'POST', headers, body: JSON.stringify(input('YM-TRACE-2026-9998', 'A')) })
+    assert.equal(stream.status, 200); assert.match(stream.headers.get('content-type')!, /text\/event-stream/)
+    const frames = await stream.text()
+    assert.match(frames, /event: result/); assert.match(frames, /未查到该溯源码/)
+    assert.doesNotMatch(frames, /event: error|开小差|不存在或无权查看/)
+    const history = await (await fetch(base, { headers })).json()
+    assert.equal(history.turns.length, 2); assert.ok(history.turns.every((item: { status: string }) => item.status === 'done'))
+    assert.equal(h.requests.length, 0)
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
 })
 
 test('新会话 HTTP 断开取消模型并持久化 stopped，不保存迟到成功结果', async () => {

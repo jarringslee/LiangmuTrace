@@ -10,6 +10,7 @@ import { retrieveQuestionSources, type QuestionSource } from './knowledgeSearch.
 import { HEALTH_POLICY, HEALTH_SAFE_ALTERNATIVE, healthAnswerPreview, healthTopic, omitUnsafeHealthSentences, unsafeHealthAnswer } from './assistantHealth.js'
 import { knowledgeWeb, type KnowledgeWeb } from './knowledgeWeb.js'
 import { getHerbKnowledge } from './knowledgeSearch.js'
+import { normalizeAssistantBatchText, readAssistantBatchCodes } from './assistantBatchQuery.js'
 
 export const herbQuestionSchema = z.object({ question: z.string().trim().min(2).max(500) }).strict()
 const generatedSchema = z.object({
@@ -185,7 +186,8 @@ export function createHerbQuestionService(
         })
         // 简短追问补上一轮问题的词法主题；旧回答不是检索资料，更不是事实来源。
         // 批次号用于定位，不参与知识召回，避免 YM 等编号词挤掉药材背景。
-        const retrievalText = (text: string) => text.replace(/^对于[^，,\n]{1,150}[，,]\s*/u, '')
+        const retrievalText = (text: string) => normalizeAssistantBatchText(text).replace(/^对于[^，,\n]{1,150}[，,]\s*/u, '')
+          .replace(/https?:\/\/\S+/gi, url => readAssistantBatchCodes(url).codes.length ? '' : url)
           .replace(/\bYM-(?:[A-Z0-9]+-)*[A-Z0-9]+\b/gi, '').trim()
         const previousQuestion = retrievalText(history.filter((message) => message.role === 'user').at(-1)?.content ?? '')
         const query = /继续|详细|再说|展开|它|这个|那个|刚才|上一|为什么/.test(question)
