@@ -1,4 +1,4 @@
-import { Router } from 'express'
+import { Router, type ErrorRequestHandler } from 'express'
 import { rateLimit } from 'express-rate-limit'
 import { authenticate } from '../middleware/auth.js'
 import { HttpError } from '../middleware/error.js'
@@ -6,6 +6,7 @@ import type { AuthService } from '../services/auth.js'
 import { assistantQuestionSchema, type AssistantService } from '../services/assistant.js'
 import { conversationMessageSchema, type AssistantConversationService } from '../services/assistantConversation.js'
 import { z } from 'zod'
+import { publicAssistantError } from '../services/assistantErrors.js'
 
 export function createAssistantRouter(auth: AuthService, service: AssistantService, conversations?: AssistantConversationService) {
   const router = Router()
@@ -72,7 +73,8 @@ export function createAssistantRouter(auth: AuthService, service: AssistantServi
     } catch (error) {
       if (controller.signal.aborted || res.destroyed) return
       if (!res.headersSent) { try { storageError(error) } catch (safe) { next(safe) }; return }
-      const safe = error instanceof HttpError ? error : new HttpError(500, 'INTERNAL_ERROR', '问答服务暂时不可用，请手动重试')
+      const mapped = publicAssistantError(error)
+      const safe = mapped instanceof HttpError ? mapped : new HttpError(500, 'INTERNAL_ERROR', '刚刚系统有点开小差，再问一遍试试吧～')
       send('error', { status: safe.status, code: safe.code, message: safe.message }); res.end()
     } finally {
       if (heartbeat) clearInterval(heartbeat)
@@ -98,5 +100,7 @@ export function createAssistantRouter(auth: AuthService, service: AssistantServi
       res.off('close', disconnected)
     }
   })
+  const sanitize: ErrorRequestHandler = (error, _req, _res, next) => next(publicAssistantError(error))
+  router.use(sanitize)
   return router
 }

@@ -17,7 +17,12 @@ export function parseGeneralAssistantReply(value: unknown, question: string, mod
     || !Array.isArray(item.citations) || item.citations.length !== 0
     || !text(item.createdAt, 100) || !/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(item.createdAt)
     || !Number.isFinite(Date.parse(item.createdAt))) return fail()
+  if (item.candidates !== undefined && (!Array.isArray(item.candidates) || item.candidates.length > 5
+    || item.candidates.some(candidate => !candidate || !text(candidate.id, 150) || !text(candidate.herbName, 100)
+      || !text(candidate.batchNo, 150) || !text(candidate.traceCode, 150))
+    || new Set(item.candidates.map(candidate => candidate.id)).size !== item.candidates.length)) return fail()
   return { id: item.id, scope: 'general', batchId: null, question,
     status: item.status, answer: item.answer, citations: [], mode,
-    modelName: item.modelName!, createdAt: item.createdAt }
+    modelName: item.modelName!, createdAt: item.createdAt,
+    ...(item.candidates ? { candidates: item.candidates.map(({ id, herbName, batchNo, traceCode }) => ({ id, herbName, batchNo, traceCode })) } : {}) }
 }

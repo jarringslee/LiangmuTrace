@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { partialAnswer, readModelStream } from '../src/lib/modelStream.js'
+import { parseAnswerJson } from '../src/lib/answerJson.js'
 
 const frame = (text: string) => `data: ${JSON.stringify({ choices: [{ delta: { content: text }, finish_reason: null }] })}\r\n\r\n`
 const end = 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
@@ -9,6 +10,23 @@ const body = (value: string) => new ReadableStream<Uint8Array>({ start(controlle
   for (const byte of new TextEncoder().encode(value)) controller.enqueue(new Uint8Array([byte]))
   controller.close()
 } })
+
+test('仅规范化字符串内未转义控制字符；截断、坏转义、缺引号不能被修成成功', () => {
+  const expected = { status: 'answered', answer: '第一行\n第二行\r\n制表\t与"引号"、\\路径' }
+  const escaped = JSON.stringify(expected)
+  assert.deepEqual(parseAnswerJson(escaped), expected)
+  assert.deepEqual(parseAnswerJson(escaped.replaceAll('\\n', '\n').replaceAll('\\r', '\r').replaceAll('\\t', '\t')), expected)
+  for (const raw of [null, '', '{"answer":"半截', '{"answer":"坏\\q"}', '{"answer":"没转义"引号"}', '{"answer":"x"', '```json\n{}\n```'])
+    assert.throws(() => parseAnswerJson(raw), { code: 'AI_RESULT_JSON_INVALID' })
+})
+
+test('流式预览与最终换行规范化一致，但未完成结构仍须拒绝', async () => {
+  const raw = '{"status":"answered","answer":"第一行\n第二行"}'
+  const seen: string[] = []
+  const result = await readModelStream(body(frame(raw) + end), new AbortController().signal, text => { seen.push(text) })
+  assert.equal((parseAnswerJson(result.content) as { answer: string }).answer, seen.at(-1))
+  assert.throws(() => parseAnswerJson(raw.slice(0, -1)), { code: 'AI_RESULT_JSON_INVALID' })
+})
 
 test('answer 增量解码支持半个转义和 Unicode；生成中隐藏引用 ID', () => {
   assert.equal(partialAnswer('{"status":"answered","answer":"山茱'), '山茱')

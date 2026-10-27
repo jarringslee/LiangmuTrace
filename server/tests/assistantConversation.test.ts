@@ -98,6 +98,78 @@ test('请求严格校验，身份/历史/上下文不能由客户端提交', () 
     { ...input(), requestId: 'not-uuid' }, { ...input(), question: ' ' }, { ...input(), question: 'x'.repeat(501) }])
     assert.equal(conversationMessageSchema.safeParse(body).success, false)
 })
+
+test('平台帮助、百合和轻量日常交流不再误要求批次；个人选药友好解释边界', async () => {
+  const h = setup()
+  for (const question of ['如何使用良木药谷', '怎么查看溯源？', '今天学了一天有点累，聊两句吧']) {
+    const result = await h.service.send(user, input(question, 'A'))
+    assert.equal(result.reply!.status, 'answered', question)
+    assert.equal(result.reply!.scope, 'general', question)
+  }
+  const herb = await h.service.send(user, input('百合是什么', 'A'))
+  assert.equal(herb.reply!.scope, 'knowledge'); assert.equal(herb.batch, null)
+  assert.ok(herb.reply!.citations.every(source => source.id.startsWith('knowledge:B00340:')))
+  const medical = await h.service.send(user, input('脾虚可以吃什么中药'))
+  assert.match(medical.reply!.answer, /不是超出聊天范围/)
+  assert.doesNotMatch(medical.reply!.answer, /只能回答中药材/)
+  assert.equal(h.lookups.length, 0)
+})
+
+test('字典外药材走联网知识，不借用当前批次；两个药材可以基础比较', async () => {
+  const h = setup(), searches: string[] = []
+  const service = createAssistantConversationService({ ...h.options, web: { async search(question) {
+    searches.push(question)
+    return [{ id: 'knowledge:web:fixture', kind: 'knowledge', title: '紫苏 · 基础资料', excerpt: '紫苏是植物。',
+      publisher: '测试可信来源', url: 'https://www.iplant.cn/bk/ABCDEF' }]
+  } } })
+  const unknown = await service.send(user, input('紫苏是什么', 'A'))
+  assert.equal(unknown.reply!.scope, 'knowledge'); assert.equal(unknown.batch, null)
+  assert.equal(searches.length, 1); assert.equal(h.lookups.length, 0)
+  const comparison = await service.send(user, input('黄芪和当归的区别', 'A'))
+  assert.equal(comparison.reply!.scope, 'knowledge')
+  const sources = JSON.parse(h.requests.at(-1)!.at(-1)!.content!).sources
+  assert.ok(sources.some((source: { title: string }) => source.title.includes('黄芪')))
+  assert.ok(sources.some((source: { title: string }) => source.title.includes('当归')))
+  assert.equal(searches.length, 1)
+})
+
+test('只发完整查询码仍生成批次概况；药名溯源多批次给候选，候选历史也受撤权保护', async () => {
+  const h = setup()
+  const overview = await h.service.send(user, input('YM-A'))
+  assert.equal(overview.reply!.scope, 'batch'); assert.equal(overview.reply!.status, 'answered')
+  const sources = JSON.parse(h.requests.at(-1)!.at(-1)!.content!).sources
+  assert.ok(sources.some((source: { id: string }) => source.id === 'batch:status'))
+  h.batches.get('B')!.herbName = '甘草'
+  const service = createAssistantConversationService({ ...h.options, batches: { ...h.options.batches,
+    list: async () => ({ items: [...h.batches.values()], pagination: { page: 1, pageSize: 6, total: 2, totalPages: 1 } }),
+  } })
+  const candidates = await service.send(user, input('甘草的溯源信息'))
+  assert.equal(candidates.reply!.candidates!.length, 2)
+  assert.equal(h.requests.length, 1) // 候选澄清不产生模型费用。
+  h.denied.add('B')
+  const hidden = (await service.read(user)).turns.at(-1)!
+  assert.match(hidden.question, /不可查看/); assert.equal(hidden.reply!.candidates, undefined)
+})
+
+test('药名溯源唯一匹配会读取真实详情，而非拿旧标签或知识库冒充', async () => {
+  const h = setup()
+  const service = createAssistantConversationService({ ...h.options, batches: { ...h.options.batches,
+    list: async () => ({ items: [h.batches.get('B')!], pagination: { page: 1, pageSize: 6, total: 1, totalPages: 1 } }),
+  } })
+  const result = await service.send(user, input('黄精的溯源信息', 'A'))
+  assert.equal(result.batch!.id, 'B'); assert.equal(result.reply!.scope, 'batch')
+})
+
+test('旧历史 JSON/引用错误只展示友好提示，内部错误码不被覆盖', async () => {
+  const h = setup()
+  const failure = createAssistantConversationService({ ...h.options, model: { name: 'broken', async complete() {
+    return { content: '{"answer":"截断', toolCalls: [] }
+  } } })
+  await assert.rejects(failure.send(user, input()), { code: 'AI_RESULT_JSON_INVALID' })
+  assert.equal(h.users.get(user.id)![0].errorCode, 'AI_RESULT_JSON_INVALID')
+  const turn = (await failure.read(user)).turns[0]
+  assert.match(turn.error!, /开小差/); assert.doesNotMatch(turn.error!, /JSON|模型|schema/)
+})
 test('同账号新服务实例恢复历史，另一个账号隔离；同 UUID 不再次调用模型', async () => {
   const h = setup(), request = input()
   const first = await h.service.send(user, request)
@@ -403,6 +475,48 @@ test('每个生成帧先复核身份；撤权后不发送正文或保存成功�
   assert.equal(h.users.get(user.id)![0].status, 'error')
   assert.equal(h.users.get(user.id)![0].reply, null)
 })
+
+test('正文帧的身份和批次检查并行等待，必须两者均完成才能发送', async () => {
+  const h = setup(), checks: string[] = [], updates: string[] = []
+  let duringFrame = false, release!: () => void, entered!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const both = new Promise<void>(resolve => { entered = resolve })
+  const mark = async (kind: string) => {
+    if (!duringFrame) return
+    checks.push(kind)
+    if (checks.length === 2) entered()
+    await gate
+  }
+  const service = createAssistantConversationService({ ...h.options,
+    auth: { currentUser: async id => { await mark('identity'); return h.options.auth.currentUser(id) } },
+    batches: { detail: async (actor, id) => { await mark('batch'); return h.options.batches.detail(actor, id) } },
+    model: { ...h.options.model, async complete(request) {
+      duringFrame = true
+      await request.onAnswer?.('同时通过后发送')
+      duringFrame = false
+      return h.options.model.complete(request)
+    } },
+  })
+  const pending = service.send(user, input('本批次登记产地', 'A'), undefined, text => { updates.push(text) })
+  try {
+    await both
+    assert.deepEqual(new Set(checks), new Set(['identity', 'batch']))
+    assert.deepEqual(updates, [])
+  } finally { release() }
+  await pending
+  assert.deepEqual(updates, ['同时通过后发送'])
+})
+
+test('批次正文合并小快照减少核验次数；首段立即发送，完整 result 不丢字', async () => {
+  const h = setup(), updates: string[] = []
+  const service = createAssistantConversationService({ ...h.options, model: { ...h.options.model, async complete(request) {
+    for (const text of ['首段', '首段补一点', '首段' + '后续'.repeat(40)]) await request.onAnswer?.(text)
+    return h.options.model.complete(request)
+  } } })
+  const result = await service.send(user, input('本批次登记产地', 'A'), undefined, text => { updates.push(text) })
+  assert.equal(updates.length, 2); assert.equal(updates[0], '首段')
+  assert.equal(result.status, 'done'); assert.ok(result.reply!.answer.includes('本轮依据'))
+})
 test('HTTP 真实问答 SSE 在模型结束前推正文，校验落库后才有 result；错误不伪装完成', async () => {
   const h = setup(), app = express()
   let release!: () => void
@@ -431,4 +545,27 @@ test('HTTP 真实问答 SSE 在模型结束前推正文，校验落库后才有 
     assert.equal(h.users.get(user.id)![0].status, 'done')
     assert.equal((await fetch(url, { method: 'POST', headers, body: JSON.stringify({ ...input(), messages: [] }) })).status, 400)
   } finally { release(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
+})
+
+test('SSE 正文生成后校验失败发送友好 error，既不泄露 JSON 文案也不写成功', async () => {
+  const h = setup(), app = express()
+  const service = createAssistantConversationService({ ...h.options, model: { name: 'broken', async complete(request) {
+    await request.onAnswer?.('未校验的正文')
+    return { content: '{"answer":"截断', toolCalls: [] }
+  } } })
+  app.use(express.json())
+  app.use('/api/assistant', createAssistantRouter({ ...h.options.auth, login: async () => user }, createAssistantService(h.options.model), service))
+  app.use(errorHandler)
+  const server = app.listen(0, '127.0.0.1'); await once(server, 'listening')
+  try {
+    const response = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/assistant/conversation/messages/stream`, {
+      method: 'POST', headers: { ...sessionHeaders(await signAccessToken(user.id)), 'Content-Type': 'application/json' },
+      body: JSON.stringify(input()),
+    })
+    const text = await response.text()
+    assert.match(text, /event: delta/); assert.match(text, /event: error/)
+    assert.match(text, /AI_RESULT_JSON_INVALID/); assert.match(text, /开小差/)
+    assert.doesNotMatch(text, /结构校验失败|模型返回|event: result/)
+    assert.equal(h.users.get(user.id)![0].status, 'error')
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
 })

@@ -1,10 +1,11 @@
-import { Router } from 'express'
+import { Router, type ErrorRequestHandler } from 'express'
 import { rateLimit } from 'express-rate-limit'
 import { z } from 'zod'
 import { authenticate } from '../middleware/auth.js'
 import { HttpError } from '../middleware/error.js'
 import type { AuthService } from '../services/auth.js'
 import { herbQuestionSchema, type HerbQuestionService } from '../services/herbQuestion.js'
+import { publicAssistantError } from '../services/assistantErrors.js'
 
 export function createHerbQuestionRouter(auth: AuthService, service: HerbQuestionService) {
   const router = Router()
@@ -36,5 +37,7 @@ export function createHerbQuestionRouter(auth: AuthService, service: HerbQuestio
       res.off('close', disconnected)
     }
   })
+  const sanitize: ErrorRequestHandler = (error, _req, _res, next) => next(publicAssistantError(error))
+  router.use(sanitize)
   return router
 }

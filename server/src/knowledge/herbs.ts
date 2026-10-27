@@ -3,7 +3,7 @@
  * HKBU 药材记录摘要 + 中科院植物智来源植物资料人工整理；不抓取图片或宣称药典鉴定。
  * retrievedAt 是本项目核对日期，不是原站发布时间；来源支持知识背景，不证明某批次质量。
  */
-export const KNOWLEDGE_VERSION = 'herb-knowledge-v3'
+export const KNOWLEDGE_VERSION = 'herb-knowledge-v4'
 
 export type KnowledgeChunk = {
   id: string
@@ -16,6 +16,11 @@ export type KnowledgeChunk = {
 }
 
 const entries = [
+  {
+    herbName: '百合', pid: 'B00340', retrievedAt: '2026-10-27',
+    origin: '百合药材取自卷丹、百合或细叶百合等来源植物的干燥肉质鳞叶，属于叶类药材。HKBU 条目列出四川、云南、贵州、湖南、湖北、陕西等产区；这些通用资料不是本批次登记产地。',
+    appearance: '百合药材鳞叶多呈长椭圆形并向内卷曲，表面可呈白色或淡黄色，部分半透明，质硬而脆。这里只说明学习识别特征，不能据此作批次质量鉴定。',
+  },
   {
     herbName: '黄精', pid: 'B00075', retrievedAt: '2026-10-06',
     // 核对官方可检索摘要；本轮原页面直连 403，不冒充完整药典或网页全文采集。

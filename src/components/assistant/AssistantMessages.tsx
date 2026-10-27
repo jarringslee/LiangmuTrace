@@ -37,6 +37,10 @@ export default function AssistantMessages({ turns, busy, retry }: {
             <AssistantMarkdown>{formatAssistantAnswer(turn.reply)}</AssistantMarkdown>
           </Suspense>
           <Text className="assistant-copy-answer" copyable={{ text: formatAssistantAnswer(turn.reply) }}>复制回答</Text>
+          {turn.reply.candidates?.map(candidate => <div key={candidate.id}>
+            <Link to={`/trace/${encodeURIComponent(candidate.id)}`}>{candidate.herbName} · {candidate.batchNo} · 查看档案</Link>
+            <div><Text copyable={{ text: candidate.traceCode }}>{candidate.traceCode}</Text></div>
+          </div>)}
           {turn.reply.citations.length > 0 && <Collapse ghost size="small" items={[{
             key: 'sources', label: `查看依据（${turn.reply.citations.length}）`,
             children: <ul className="assistant-sources">{turn.reply.citations.map((source, index) => (
@@ -50,7 +54,7 @@ export default function AssistantMessages({ turns, busy, retry }: {
           }]} />}
         </>}
         {(turn.status === 'error' || turn.status === 'stopped') && <>
-          <Paragraph type={turn.status === 'error' ? 'danger' : 'secondary'}>
+          <Paragraph type="secondary">
             {turn.status === 'stopped' ? '已停止回答' : turn.error}
           </Paragraph>
           <Button size="small" disabled={busy} onClick={() => retry({ question: turn.question, batch: turn.batch })}>重新提问</Button>

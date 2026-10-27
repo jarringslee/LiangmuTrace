@@ -45,6 +45,24 @@ test('普通回复按问题/模式/来源/批次/模型/日期校验，白名单
   }
 })
 
+test('批次候选白名单保留查询码，不接受重复/非法候选或额外私有字段', () => {
+  const candidate = { ...batch, traceCode: 'YM-TRACE-A', internal: 'secret' }
+  const value = { ...reply, status: 'insufficient', modelName: null, candidates: [candidate] }
+  assert.deepEqual(parse(value, '你好', 'api').candidates, [{ ...batch, traceCode: 'YM-TRACE-A' }])
+  for (const candidates of [[candidate, candidate], [{ ...candidate, id: '' }], [null], Array(6).fill(candidate)])
+    assert.throws(() => parse({ ...value, candidates }, '你好', 'api'), { code: 'INVALID_RESPONSE' })
+})
+
+test('知识库/联网来源使用统一契约，可信来源域名不放行伪装站点或重定向', async () => {
+  const { isKnowledgeSourceUrl } = await vite.ssrLoadModule('/src/services/knowledgeSourceUrl.ts')
+  for (const url of ['https://www.iplant.cn/bk/ABCDEF',
+    'https://www.cmro.gov.hk/html/gb/useful_information/public_health/pamphlet/Adverse_Reactions_of_CM.html',
+    'https://embracehealth.hkbu.edu.hk/html/eclassroom_book_detail.php?bookid=37']) assert.equal(isKnowledgeSourceUrl(url), true)
+  for (const url of ['http://www.iplant.cn/bk/ABCDEF', 'https://www.iplant.cn.evil.test/bk/ABCDEF',
+    'https://embracehealth.hkbu.edu.hk/redirect?to=https://evil.test', 'https://www.cmro.gov.hk:8888/html/a'])
+    assert.equal(isKnowledgeSourceUrl(url), false)
+})
+
 test('无批次请求只发送本轮问题，Cookie/取消复用，不上传 UI 历史', async () => {
   let calls = 0
   globalThis.fetch = async (url, options) => {

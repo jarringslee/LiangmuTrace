@@ -231,3 +231,17 @@ test('HTTP 断开会传递取消至模型，不让隐藏请求继续等待', asy
     await started; controller.abort(); await pending; await ended
   } finally { await h.close() }
 })
+
+test('普通 HTTP 错误保留诊断码，不泄露 JSON/上游内部文案', async () => {
+  const h = await httpHarness(createAssistantService({ name: 'broken', async complete() {
+    return { content: '{"answer":"unfinished', toolCalls: [] }
+  } }))
+  try {
+    const response = await h.send(await signAccessToken('buyer'))
+    const body = await response.json()
+    assert.equal(response.status, 502)
+    assert.equal(body.error.code, 'AI_RESULT_JSON_INVALID')
+    assert.match(body.error.message, /开小差/)
+    assert.doesNotMatch(body.error.message, /JSON|schema|上游/)
+  } finally { await h.close() }
+})

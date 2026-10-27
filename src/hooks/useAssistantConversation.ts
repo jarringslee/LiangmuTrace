@@ -5,7 +5,7 @@ import type { AssistantBatch, AssistantContextValue, AssistantHistory, Assistant
 import { authMode } from '../config/api'
 import { getAssistantHistory, streamAssistantMessage } from '../services/assistantDataSource'
 import { assistantSessionKey, isCurrentAssistantSession } from '../services/assistantSession'
-import { isAbortError } from '../services/api'
+import { ApiError, isAbortError } from '../services/api'
 import { mergeAssistantTurns } from '../utils/assistant'
 
 type Run = AssistantRequest & { id: string; controller: AbortController; selection: number }
@@ -92,7 +92,8 @@ export function useAssistantConversation(session: AuthSession): AssistantContext
             const stopped = run.controller.signal.aborted || isAbortError(error)
             setLocalTurns((items) => items.map((item) => item.id === run.id ? {
                 ...item, status: stopped ? 'stopped' : 'error',
-                error: error instanceof Error ? error.message : '回答失败，请手动重试',
+                error: error instanceof ApiError && ['AI_RATE_LIMITED', 'AI_QUESTION_RUNNING', 'AI_QUESTION_STALE', 'UNAUTHORIZED', 'FORBIDDEN'].includes(error.code)
+                    ? error.message : '刚刚系统有点开小差，再问一遍试试吧～',
             } : item))
         } finally {
             if (runRef.current === run) runRef.current = null

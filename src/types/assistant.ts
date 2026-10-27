@@ -16,6 +16,7 @@ export type AssistantReply = {
   mode: 'api' | 'demo'
   modelName: string | null
   createdAt: string
+  candidates?: (AssistantBatch & { traceCode: string })[]
 }
 
 // 一次提问对应一对气泡，固定记录发送时的批次，不依赖之后切换的标签。

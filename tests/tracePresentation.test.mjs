@@ -131,7 +131,7 @@ test('批次标签和前缀工具保留，默认折叠状态使用 ARIA 关联�
 test('无批次和 demo 的说明区分普通聊天与离线历史，不声称调用真实 AI', () => {
   fixture.historyMode = 'demo'
   const html = withoutTextBoundaries(renderToString(createElement(Drawer)))
-  assert.match(html, /药材知识 \/ 批次查询/)
+  assert.match(html, /药材与健康科普 \/ 批次查询/)
   assert.match(html, /使用说明/)
   assert.match(html, /仅本次登录保留历史，不调用 AI/)
   assert.doesNotMatch(html, /插入批次前缀|本人历史已保存/)

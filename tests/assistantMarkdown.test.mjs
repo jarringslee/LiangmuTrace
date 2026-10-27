@@ -92,9 +92,9 @@ test('正常资料不足不标为错误；请求失败保留独立的失败与�
   }))
   assert.doesNotMatch(normal, /ant-typography-danger|重新提问/)
   const failure = renderToString(createElement(AssistantMessages, {
-    turns: [{ id: 'failed', question: '问题', batch: null, status: 'error', error: '回答格式不正确' }], busy: false, retry: () => undefined,
+    turns: [{ id: 'failed', question: '问题', batch: null, status: 'error', error: '刚刚系统有点开小差，再问一遍试试吧～' }], busy: false, retry: () => undefined,
   }))
-  assert.match(failure, /ant-typography-danger/)
-  assert.match(failure, /回答格式不正确/)
+  assert.doesNotMatch(failure, /ant-typography-danger|JSON|回答格式不正确/)
+  assert.match(failure, /开小差/)
   assert.match(failure, /重新提问/)
 })

@@ -36,7 +36,7 @@ export default function AssistantDrawer() {
                     <div className="assistant-context-summary">
                         {batch
                             ? <Tag closable onClose={removeBatch}>{batch.herbName} · {batch.batchNo}</Tag>
-                            : <Text type="secondary">药材知识 / 批次查询</Text>}
+                            : <Text type="secondary">药材与健康科普 / 批次查询</Text>}
                         <Button className="assistant-context-toggle" size="small"
                             aria-expanded={contextExpanded} aria-controls={contextId}
                             onClick={() => setContextExpanded((value) => !value)}>
@@ -49,7 +49,7 @@ export default function AssistantDrawer() {
                                 value.startsWith(prefix) ? value : (prefix + value).slice(0, 500))}>插入批次前缀</Button>
                             <Text copyable={{ text: prefix }}>复制前缀</Text>
                             <Text type="secondary">可以普通聊天；批次问题按标签或明确编号查询。</Text>
-                        </Space> : <Text type="secondary">可普通聊天或问药材知识；查具体档案可带入标签或输入完整批次号。</Text>}
+                        </Space> : <Text type="secondary">可日常聊天、问中药与健康科普；知识库优先，缺资料时联网检索。查档案可输入“黄芪的溯源信息”或完整查询码。</Text>}
                     </div>
                 </div>
                 {historyLoading && <Text type="secondary">正在同步聊天记录…</Text>}
